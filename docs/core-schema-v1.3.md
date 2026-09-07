@@ -69,8 +69,9 @@ Single unified entity type.
 
 No enforced ontology. No mandatory semantic classification.
 
-Fields: - id - label - scope_work (nullable) - description (optional
-scholarly note) - concept_features (JSON, optional) - metadata
+Fields: - id - label - scope_document (nullable; was `scope_work` until
+D-099 removed the Work entity) - description (optional scholarly note) -
+concept_features (JSON, optional) - metadata
 
 Concept_features: - Fully optional. - No predefined required flags. -
 Absence of feature means "unspecified". - May be extended without schema

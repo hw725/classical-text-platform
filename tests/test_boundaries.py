@@ -540,3 +540,103 @@ class TestWorkIsGone:
         retired = interp / "core_entities" / "works_removed_v1" / "w1.json"
         assert retired.exists()
         assert _json.loads(retired.read_text(encoding="utf-8"))["title"] == "옛 작품"
+
+    # 코어 스키마에서 «없앤 엔티티»를 가리키던 필드 이름. D-099에서 Work를 없앴는데
+    # unit.schema.json의 required에 `work_id`가 2026-09-07까지 남아 있었다 — 그 스키마는
+    # 어떤 저장 경로에서도 검증에 쓰이지 않아(단위는 파일이 아니다) 아무것도 빨간불을 켜지
+    # 않았다. 엔티티를 또 없애면 여기에 이름을 보태면 된다.
+    REMOVED_ENTITIES = ("work",)
+
+    @staticmethod
+    def _walk_schema(node, found: set[str]):
+        """스키마 트리를 돌며 properties의 키와 required의 항목을 모은다 ($defs 안까지)."""
+        if isinstance(node, dict):
+            for key in ("properties",):
+                props = node.get(key)
+                if isinstance(props, dict):
+                    found.update(props.keys())
+            req = node.get("required")
+            if isinstance(req, list):
+                found.update(str(r) for r in req)
+            for v in node.values():
+                TestWorkIsGone._walk_schema(v, found)
+        elif isinstance(node, list):
+            for v in node:
+                TestWorkIsGone._walk_schema(v, found)
+
+    def test_no_core_schema_still_refers_to_a_removed_entity(self):
+        """없앤 엔티티의 스키마 파일도, 그것을 가리키는 `<이름>_id`·`scope_<이름>`도 남지 않는다.
+
+        왜 test_doc_drift.py가 아니라 여기인가: 그 시험은 «셀 수 있는 수치»를 문서에서
+        정규식으로 찾아 코드 실측과 견주는 검사기(scripts/check_doc_drift.py)를 그대로
+        부른다. 스키마의 모양은 수치가 아니라 이름이라 그 검사기 틀에 맞지 않고, D-099의
+        회귀는 이 클래스가 맡고 있다.
+        """
+        import json as _json
+
+        core_dir = Path(__file__).resolve().parent.parent / "schemas" / "core"
+        assert core_dir.is_dir()
+        for name in self.REMOVED_ENTITIES:
+            assert not (core_dir / f"{name}.schema.json").exists(), (
+                f"없앤 엔티티 '{name}'의 스키마 파일이 아직 있다"
+            )
+            stale = {f"{name}_id", f"scope_{name}"}
+            for schema_path in sorted(core_dir.glob("*.json")):
+                found: set[str] = set()
+                self._walk_schema(
+                    _json.loads(schema_path.read_text(encoding="utf-8")), found
+                )
+                left = stale & found
+                assert not left, (
+                    f"{schema_path.name}이 없앤 엔티티 '{name}'을 아직 가리킨다: {sorted(left)}"
+                )
+
+    def test_unit_view_matches_unit_schema(self, tmp_path):
+        """경계 목록에서 만든 단위(읽기 보기)가 unit.schema.json에 맞는다.
+
+        왜: create/update 경로는 단위를 경계로 바꿔 저장하므로 `_validate_entity`가
+        unit.schema.json을 열 일이 없다. 스키마가 «적어 둔 것»으로 남으면 D-099 뒤에도
+        `work_id`가 required에 남듯 조용히 어긋난다(D-101의 문제 의식). 여기서 실제
+        보기를 스키마에 넣어 본다.
+        """
+        import json as _json
+
+        import jsonschema
+
+        from src.core import entity as E
+
+        lib = tmp_path / "lib"
+        doc = lib / "documents" / "d"
+        (doc / "L4_text" / "pages").mkdir(parents=True)
+        (doc / "manifest.json").write_text(
+            _json.dumps({"document_id": "d", "parts": [{"part_id": "v1", "page_count": 1}]}),
+            encoding="utf-8",
+        )
+        (doc / "L4_text" / "pages" / "v1_page_001.txt").write_text(PAGE1, encoding="utf-8")
+        interp = lib / "interpretations" / "i"
+        (interp / "core_entities").mkdir(parents=True)
+        (interp / "dependency.json").write_text(
+            _json.dumps({"source": {"document_id": "d"}}), encoding="utf-8"
+        )
+        pt = {1: PAGE1}
+        B.save_boundaries(
+            interp,
+            _data(
+                B.new_boundary({"page": 1, "line": 0, "offset": 0}, title="七日", page_texts=pt),
+                B.new_boundary(
+                    {"page": 1, "line": 0, "offset": K8}, level=3, title="조각", page_texts=pt
+                ),
+                B.new_boundary({"page": 1, "line": 1, "offset": K9}, title="九日", page_texts=pt),
+            ),
+        )
+        units = E.list_entities(interp, "unit")
+        assert len(units) == 3
+
+        schema_path = Path(__file__).resolve().parent.parent / "schemas" / "core" / "unit.schema.json"
+        validator = jsonschema.Draft202012Validator(
+            _json.loads(schema_path.read_text(encoding="utf-8")),
+            format_checker=jsonschema.Draft202012Validator.FORMAT_CHECKER,
+        )
+        for u in units:
+            errors = [e.message for e in validator.iter_errors(u)]
+            assert not errors, f"단위 {u['id']}가 unit.schema.json에 어긋난다: {errors}"

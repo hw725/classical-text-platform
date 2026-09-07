@@ -4761,6 +4761,7 @@ Work의 유일하게 그럴듯한 미래 용도는 **이본 대조**(같은 작�
 | `Concept.scope_work` | **`scope_document`로 옮김** — 지금 문맥에서 「작품」에 해당하는 것은 문헌이다. Concept이 0건이라 무손실 |
 | 쪽 엔티티 목록 | 응답에서 `works` 칸 삭제 |
 | 옛 데이터 | 저장소를 열 때 `core_entities/works/` → **`works_removed_v1/`** 로 이름만 바꾸고 커밋. 지우지 않는다 |
+| `unit.schema.json`의 `work_id` | **빠뜨렸다가 2026-09-07에 걷어냈다.** required·properties에 남아 있었는데 사흘간 아무것도 빨간불을 켜지 않았다 — 단위는 v1.3부터 파일이 아니라 읽기 보기라(D-092) 어떤 저장 경로도 이 스키마로 검증하지 않고, D-101의 「검증 결과」 패널도 파일만 잰다. 옛 서고에는 영향이 없다(옛 `text_block` 파일은 열 때 경계로 옮기며 `work_id`를 버린다). 재발 방지: `tests/test_boundaries.py::TestWorkIsGone`이 ① 없앤 엔티티를 가리키는 `<이름>_id`·`scope_<이름>`이 코어 스키마에 남지 않는지 ② 실제 읽기 보기가 `unit.schema.json`에 맞는지 검사한다 |
 
 ### 되돌리려면
 

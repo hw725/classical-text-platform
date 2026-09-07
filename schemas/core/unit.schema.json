@@ -2,24 +2,19 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "unit.schema.json",
   "title": "Unit — 해석용 글 단위",
-  "description": "해석의 글 단위. v1.3부터 저장하지 않고 경계 목록(boundaries.schema.json)에서 만든 읽기 보기이며, 이 스키마는 그 보기의 모양을 고정한다 (D-092·D-093 — 옛 이름은 TextBlock). 원본 저장소의 LayoutBlock·OcrResult와는 다른 것이다. source_refs로 출처를 항상 추적한다 (D-005).",
+  "description": "해석의 글 단위. v1.3부터 저장하지 않고 경계 목록(boundaries.schema.json)에서 만든 읽기 보기이며, 이 스키마는 그 보기의 모양을 고정한다 (D-092·D-093 — 옛 이름은 TextBlock). 원본 저장소의 LayoutBlock·OcrResult와는 다른 것이다. source_refs로 출처를 항상 추적한다 (D-005). 저장 경로에서는 검증에 쓰이지 않으므로(단위는 파일이 아니다) tests/test_boundaries.py가 읽기 보기를 이 스키마로 검사한다 — work_id는 D-099(Work 삭제)로 없다.",
   "type": "object",
-  "required": ["id", "work_id", "sequence_index", "original_text", "status"],
+  "required": ["id", "sequence_index", "original_text", "status"],
   "additionalProperties": false,
   "properties": {
     "id": {
       "type": "string",
-      "description": "UUID.",
-      "format": "uuid"
-    },
-    "work_id": {
-      "type": "string",
-      "description": "소속 Work의 id.",
+      "description": "시작 경계의 id (D-092). UUID.",
       "format": "uuid"
     },
     "sequence_index": {
       "type": "integer",
-      "description": "작품 내 순서. 0-based.",
+      "description": "권 안의 차례 (D-098 — v1.2까지는 Work 안의 차례였다). 0-based.",
       "minimum": 0
     },
     "original_text": {

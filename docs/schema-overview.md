@@ -101,9 +101,8 @@ schemas/
 
 | 참조 원본 | 참조 대상 | 필드 |
 |-----------|----------|------|
-| `unit`.work_id | `work`.id | ──▶ |
-| `tag`.block_id | `unit`.id | ──▶ |
-| `concept`.scope_work | `work`.id | ──▶ (선택) |
+| `tag`.block_id | `unit`.id | ──▶ (이름은 v1.2의 것 — D-093·B-003) |
+| `concept`.scope_document | `manifest`.document_id | ──▶ (선택. v1.2의 `scope_work`는 D-099에서 옮김) |
 | `relation`.subject_id | `agent`.id \| `concept`.id | ──▶ |
 | `relation`.object_id | `agent`.id \| `concept`.id \| `unit`.id | ──▶ |
 | `relation`.evidence_blocks[] | `unit`.id | ──▶ |
