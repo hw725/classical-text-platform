@@ -7846,6 +7846,12 @@ select.prop-level { max-width: 4.6em; }
 
 /* 쪼개기 모달 — 본문이 길 수 있어 넓고 높게 */
 .comp-split-dialog { width: 720px; max-height: 82vh; padding: 12px; gap: 8px; }
+/* LLM에 묻기 모달 (D-117) */
+.comp-llm-dialog { width: 560px; max-height: 82vh; padding: 12px; gap: 8px; }
+.comp-llm-opt { display: flex; align-items: flex-start; gap: 6px; font-size: 11.5px; line-height: 1.5; cursor: pointer; }
+.comp-llm-opt input { margin-top: 3px; }
+.comp-llm-opt-note { color: var(--text-muted); }
+.comp-llm-model { align-items: center; font-size: 11px; color: var(--text-secondary); }
 .comp-split-info { font-size: 10px; color: var(--text-muted); margin-left: 6px; }
 .comp-split-note { font-size: 11px; color: var(--text-muted); line-height: 1.5; }
 .comp-split-note code { font-family: var(--font-mono); }

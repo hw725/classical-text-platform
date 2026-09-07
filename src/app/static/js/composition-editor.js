@@ -86,8 +86,20 @@ function _bindCompEvents() {
     });
   const applyAll = document.getElementById("comp-apply-all-btn");
   if (applyAll) applyAll.addEventListener("click", _applyAllFromSignals);
-  const llmPattern = document.getElementById("comp-llm-pattern-btn");
-  if (llmPattern) llmPattern.addEventListener("click", _askLlmPatterns);
+  // LLM 진입점은 하나 — 「LLM에 묻기」 창에서 무엇을 물을지 고른다
+  const llmBtn = document.getElementById("comp-llm-btn");
+  if (llmBtn) llmBtn.addEventListener("click", _openLlmModal);
+  const llmRun = document.getElementById("comp-llm-run");
+  if (llmRun) llmRun.addEventListener("click", _runLlmModal);
+  for (const id of ["comp-llm-close", "comp-llm-cancel"]) {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener("click", _closeLlmModal);
+  }
+  const llmOverlay = document.getElementById("comp-llm-overlay");
+  if (llmOverlay)
+    llmOverlay.addEventListener("click", (ev) => {
+      if (ev.target === llmOverlay) _closeLlmModal();
+    });
   const addBtn = document.getElementById("comp-signals-add-btn");
   const addInput = document.getElementById("comp-signals-add-word");
   if (addBtn) addBtn.addEventListener("click", _addManualWord);
@@ -105,8 +117,6 @@ function _bindCompEvents() {
       el.classList.toggle("is-selected", el.dataset.unitId === ev.detail.id);
     });
   });
-  const rulesSuggest = document.getElementById("comp-rules-suggest-btn");
-  if (rulesSuggest) rulesSuggest.addEventListener("click", _suggestRules);
   // textarea 입력 시 쪼개기 미리보기 업데이트
   if (splitTextarea)
     splitTextarea.addEventListener("input", _updateSplitPreview);
@@ -770,7 +780,6 @@ function _signalLabel(id) {
 function _renderVerdict() {
   const box = document.getElementById("comp-verdict");
   const text = document.getElementById("comp-verdict-text");
-  const llmBtn = document.getElementById("comp-llm-pattern-btn");
   const details = document.getElementById("comp-signals");
   if (!box || !text) return;
   const d = signalState.data;
@@ -778,7 +787,6 @@ function _renderVerdict() {
   box.classList.remove("is-none", "is-toc");
   if (!stage) {
     text.textContent = "전문을 세지 못했습니다.";
-    if (llmBtn) llmBtn.hidden = true;
     return;
   }
   const saved = d.saved_rules;
@@ -797,7 +805,6 @@ function _renderVerdict() {
     box.classList.add("is-none");
     if (details) details.open = true;
   }
-  if (llmBtn) llmBtn.hidden = stage.level !== 0 && !signalState.llmAsked;
   // 저장된 설정이 이번 권고와 다르면(예: D-116 때 저장한 뒤 층계가 바뀜) 한 번에 권고로 돌아갈 길을 준다
   box.querySelectorAll(".comp-verdict-reset").forEach((el) => el.remove());
   const rec = d.recommended_rules;
@@ -828,12 +835,108 @@ function _renderVerdict() {
 }
 
 /**
+ * 「LLM에 묻기」 창 — 편성 탭에서 모델을 부르는 유일한 자리 (D-117).
+ *
+ * 왜 하나인가: LLM 단추가 셋(구조화 스위치·어휘 뽑기·표지 묻기)이면 «무엇이 모델을 부르는가»가
+ * 헷갈린다(사용자 지시 2026-09-07). 창에서 셋 중 고르고 「묻기」 한 번으로 돈다.
+ * 목차 항목 구조화는 «설정»이라(문헌 설정 toc_llm) 켜 두면 「후보 보기」·「전부 적용」 때마다 쓰고,
+ * 나머지 둘은 누를 때 한 번 돈다.
+ */
+function _openLlmModal() {
+  if (!viewerState.docId || !viewerState.partId) {
+    showToast("사이드바에서 문헌과 권을 먼저 고르세요.", "warning");
+    return;
+  }
+  const overlay = document.getElementById("comp-llm-overlay");
+  if (!overlay) return;
+  const d = signalState.data;
+  const toc = _signalsCurrent() ? d.toc : null;
+  const optToc = document.getElementById("comp-llm-opt-toc");
+  const note = document.getElementById("comp-llm-opt-toc-note");
+  if (optToc) {
+    optToc.checked = !!document.getElementById("comp-toc-llm")?.checked;
+    optToc.disabled = !toc;
+  }
+  if (note) note.textContent = toc ? `(목차 ${toc.pages.join(",")}쪽 · ${toc.entries}항목)` : "(이 권에서 목차 쪽을 못 찾아 해당 없음)";
+  const optPat = document.getElementById("comp-llm-opt-patterns");
+  if (optPat) optPat.checked = !!(d && d.stage && d.stage.level === 0); // 못 찾은 책이면 표지 묻기가 기본
+  const optWords = document.getElementById("comp-llm-opt-words");
+  if (optWords) optWords.checked = false;
+  const status = document.getElementById("comp-llm-status");
+  if (status) status.textContent = _signalsCurrent() ? "" : "먼저 「경계 제안」으로 신호를 세면 표본이 준비됩니다 — 「묻기」를 누르면 세고 나서 묻습니다.";
+  overlay.style.display = "";
+}
+
+function _closeLlmModal() {
+  const overlay = document.getElementById("comp-llm-overlay");
+  if (overlay) overlay.style.display = "none";
+}
+
+async function _runLlmModal() {
+  const wantToc = !!document.getElementById("comp-llm-opt-toc")?.checked;
+  const wantWords = !!document.getElementById("comp-llm-opt-words")?.checked;
+  const wantPat = !!document.getElementById("comp-llm-opt-patterns")?.checked;
+  const status = document.getElementById("comp-llm-status");
+  const run = document.getElementById("comp-llm-run");
+  const say = (t) => {
+    if (status) status.textContent = t;
+  };
+  if (!_signalsCurrent()) {
+    say("신호를 세는 중…");
+    await _openProposePanel();
+    if (!_signalsCurrent()) {
+      say("신호를 세지 못했습니다.");
+      return;
+    }
+  }
+  // 목차 구조화는 설정이다 — 숨은 체크박스(문헌 설정 toc_llm)에 남긴다
+  const tocState = document.getElementById("comp-toc-llm");
+  const mark = document.getElementById("comp-toc-llm-mark");
+  if (tocState && tocState.checked !== wantToc) {
+    tocState.checked = wantToc;
+    signalState.touched = true;
+  }
+  if (mark) mark.hidden = !wantToc;
+  if (!wantToc && !wantWords && !wantPat) {
+    say("고른 것이 없습니다.");
+    return;
+  }
+  if (run) run.disabled = true;
+  try {
+    const done = [];
+    if (wantWords) {
+      say("해제·본문 표본을 보내는 중…");
+      await _suggestRules();
+      done.push("표제 어휘");
+    }
+    if (wantPat) {
+      say("시작 표지 표본을 보내는 중…");
+      await _askLlmPatterns();
+      done.push("시작 표지");
+    }
+    if (wantToc) {
+      say("목차 쪽 텍스트를 보내는 중…");
+      await _detectToc(true);
+      done.push("목차 구조화");
+    }
+    _closeLlmModal();
+    const details = document.getElementById("comp-signals");
+    if (details) details.open = true;
+    const out = document.getElementById("comp-llm-pattern-out");
+    if (out && !wantPat) out.textContent = `LLM: ${done.join(" · ")} — «자세히 · 고치기»에서 후보를 확인하고 「후보 보기」로 저장하세요`;
+    if (wantToc) await _proposeBoundaries();
+  } finally {
+    if (run) run.disabled = false;
+  }
+}
+
+/**
  * 4단 (D-117): 통계가 못 찾은 책 — LLM에 «시작 표지의 공통점»을 묻는다. 표본 행만 보내고,
  * 답은 정해진 종류로만 받으며, 전문에서 되풀이되는 것만 신호 목록에 들어온다(켤지는 사람이).
  */
 async function _askLlmPatterns() {
   const out = document.getElementById("comp-llm-pattern-out");
-  const btn = document.getElementById("comp-llm-pattern-btn");
+  const btn = null;
   if (!_signalsCurrent()) {
     showToast("먼저 「경계 제안」으로 신호를 세세요.", "warning");
     return;
@@ -1297,6 +1400,8 @@ function _rulesToForm(rules) {
   if (s) s.value = (rules?.suppress || []).join("\n");
   const tocLlm = document.getElementById("comp-toc-llm");
   if (tocLlm && rules && typeof rules.toc_llm === "boolean") tocLlm.checked = rules.toc_llm;
+  const mark = document.getElementById("comp-toc-llm-mark");
+  if (mark) mark.hidden = !(tocLlm && tocLlm.checked);
   if (m) m.value = rules?.max_title_chars || 14;
   const r = document.getElementById("comp-rules-reference");
   if (r) {
@@ -1689,7 +1794,7 @@ function _renderProposals() {
  */
 async function _suggestRules() {
   const out = document.getElementById("comp-rules-suggest-out");
-  const btn = document.getElementById("comp-rules-suggest-btn");
+  const btn = null;
   if (!out || !viewerState.docId || !viewerState.partId) {
     if (out) out.textContent = "문헌과 권을 먼저 고르세요.";
     return;

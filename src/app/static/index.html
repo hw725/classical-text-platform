@@ -395,7 +395,7 @@
                 <button
                   id="contents-auto-btn"
                   class="section-action-btn"
-                  title="규칙만 (LLM 안 씀): 이 책에서 찾은 규약(목차 → 기호·내려쓰기 → 날짜·어휘)으로 개요를 세웁니다 — 규칙이 아직 없으면 전문에서 먼저 찾아 저장합니다. 목차 항목 구조화에 LLM을 쓰려면 편성 탭의 「LLM으로 구조화」 스위치를 켜고 「전부 적용해 새로 세우기」를 누르세요. 이 권의 기존 경계는 새로 세워집니다 (Git으로 되돌릴 수 있음)"
+                  title="규칙만 (LLM 안 씀): 이 책에서 찾은 규약(목차 → 기호·내려쓰기 → 날짜·어휘)으로 개요를 세웁니다 — 규칙이 아직 없으면 전문에서 먼저 찾아 저장합니다. 목차 항목 구조화에 LLM을 쓰려면 편성 탭 「LLM에 묻기」에서 구조화를 켜고 「전부 적용해 새로 세우기」를 누르세요. 이 권의 기존 경계는 새로 세워집니다 (Git으로 되돌릴 수 있음)"
                 >
                   자동 트리
                 </button>
@@ -1919,18 +1919,18 @@
                   <div style="flex: 1"></div>
                   <button id="comp-propose-cancel-btn" class="text-btn" style="font-size: 11px">닫기</button>
                   <button id="comp-propose-apply-btn" class="text-btn text-btn-primary" style="font-size: 11px" title="아래 후보 중 체크한 것만 경계로 만듭니다. 전에 제안으로 만든 경계 중 체크가 빠진 것은 지워지고, 손으로 넣은 경계는 남습니다">골라 적용</button>
-                  <button id="comp-apply-all-btn" class="text-btn text-btn-primary" style="font-size: 11px" title="신호 설정을 저장하고, 그 규칙이 승인한 후보 전부로 이 권의 개요를 새로 세웁니다 (기존 경계는 지워지며 Git으로 되돌릴 수 있음). 사이드바 「자동 트리」와 같되, 목차 줄의 「LLM으로 구조화」 스위치를 켜 두었으면 여기서만 모델을 부릅니다">전부 적용해 새로 세우기</button>
+                  <button id="comp-apply-all-btn" class="text-btn text-btn-primary" style="font-size: 11px" title="신호 설정을 저장하고, 그 규칙이 승인한 후보 전부로 이 권의 개요를 새로 세웁니다 (기존 경계는 지워지며 Git으로 되돌릴 수 있음). 사이드바 「자동 트리」와 같되, 「LLM에 묻기」에서 목차 항목 구조화를 켜 두었으면 여기서만 모델을 부릅니다">전부 적용해 새로 세우기</button>
                 </div>
                 <!-- 답 한 줄 (D-117): 층계(목차 → 시각 → 텍스트 → LLM → 사람)가 어디서 멈췄는지.
                      처음 보는 사람은 이 줄과 아래 후보, 단추 셋만 본다. 신호 목록은 «자세히·고치기»에 접혀 있다 -->
                 <div id="comp-verdict" class="comp-verdict">
                   <span id="comp-verdict-text">전문을 세는 중…</span>
-                  <button id="comp-llm-pattern-btn" class="text-btn text-btn-sm" hidden title="LLM 사용: 짧은 행·행갈음 뒤의 행 표본(≤80줄)만 모델에 보내 «시작 표지의 공통점»을 정해진 종류로 답받고, 전문에서 되풀이되는 것만 신호 목록에 넣습니다. 켤지는 직접 정합니다">LLM에 시작 표지 묻기 <span class="llm-tag">LLM</span></button>
+                  <button id="comp-llm-btn" class="text-btn text-btn-sm" title="이 탭에서 모델을 부르는 유일한 단추입니다. 누르면 무엇을 물을지(목차 항목 구조화 · 해제·본문에서 표제 어휘 뽑기 · 시작 표지 묻기)를 고르는 창이 뜹니다. 텍스트 조각만 보내고 이미지·본문 전체는 보내지 않습니다">LLM에 묻기 <span class="llm-tag">LLM</span></button>
                   <span id="comp-llm-pattern-out" class="comp-rules-suggest-out"></span>
                 </div>
                 <!-- 규칙 도구와 LLM 도구가 한 패널에 있다. 무엇이 모델을 부르는지 여기서 한 번 말한다 -->
                 <div class="comp-llm-legend">
-                  신호 세기·경계 제안·적용은 <b>규칙만</b> 씁니다. <span class="llm-tag">LLM</span> 스위치·단추만 텍스트를 모델에 보냅니다 (이미지는 보내지 않음).
+                  신호 세기·경계 제안·적용은 <b>규칙만</b> 씁니다. 모델을 부르는 것은 <b>「LLM에 묻기」</b> 하나뿐이고, 거기서 고른 것만 텍스트를 보냅니다 (이미지는 보내지 않음).
                 </div>
                 <!-- 이 책의 신호 (D-116·D-117): 전문에서 센 규약 후보를 체크박스로. 고른 것이 규칙(문헌 설정)이 된다.
                      기본은 접힘 — 층계가 잘못 골랐을 때만 펼쳐 켜고 끈다. 흐름: 고치기 → 「후보 보기」 → 「골라 적용」/「전부 적용」 -->
@@ -1950,12 +1950,9 @@
                     <label class="comp-sig-opt">쪽
                       <input id="comp-toc-pages" type="text" placeholder="자동" style="width: 56px; font-size: 11px" title="쉼표로 구분 (예: 3,4). 비우면 자동 판별" />
                     </label>
-                    <label class="comp-sig-opt" title="목차 쪽의 텍스트만 모델에 보내 항목을 구조화합니다 (해제가 있으면 함께). 본문·이미지는 보내지 않습니다. 실패하면 규칙 결과로 돌아갑니다. 사이드바 「자동 트리」도 이 스위치를 따릅니다">
-                      <input id="comp-toc-llm" type="checkbox" />
-                      LLM으로 구조화 <span class="llm-tag">LLM</span>
-                    </label>
-                    <select id="comp-llm-model-select" class="props-select llm-model-select" style="font-size: 11px; max-width: 150px"
-                      title="LLM 스위치·단추에 쓸 모델. «자동»은 사용 가능한 프로바이더 순서(Ollama → Gemini …)로 넘어갑니다"></select>
+                    <!-- 목차 항목 구조화에 LLM을 쓸지(문헌 설정 toc_llm). 켜고 끄는 자리는 「LLM에 묻기」 창이다 -->
+                    <input id="comp-toc-llm" type="checkbox" hidden />
+                    <span id="comp-toc-llm-mark" class="comp-sig-aux" hidden title="「LLM에 묻기」에서 목차 항목 구조화를 켜 두었습니다 — 「후보 보기」·「전부 적용」 때 목차 쪽 텍스트를 모델에 보냅니다">LLM 구조화 켬</span>
                   </div>
                   <div id="comp-signals-list" class="comp-signals-list">
                     <div class="placeholder">전문을 세는 중…</div>
@@ -1965,14 +1962,13 @@
                       <input id="comp-signals-add-word" type="text" placeholder="예: 筆談" style="width: 70px; font-size: 11px" title="표제를 끝맺는 말(짧은 행 끝)을 직접 넣습니다. 행 첫머리 어휘는 앞에 ^를 붙이세요 (예: ^有). 기호 한 글자(예: ●)는 그대로 넣으면 기호 신호가 됩니다" />
                     </label>
                     <button id="comp-signals-add-btn" class="text-btn text-btn-sm">넣기</button>
-                    <button id="comp-rules-suggest-btn" class="text-btn text-btn-sm" title="LLM 사용: 해제와 본문의 짧은 행 표본을 모델에 보내 표제 어휘 후보를 뽑습니다. 후보는 목록에 들어오고, 켤지는 직접 정합니다">해제·본문에서 뽑기 <span class="llm-tag">LLM</span></button>
                     <span id="comp-rules-suggest-out" class="comp-rules-suggest-out"></span>
                   </div>
                   <details class="comp-rules-advanced">
                     <summary>참고·억제 <small>— 해제 텍스트(LLM만 읽음)·표제로 보지 않을 행·글자수</small></summary>
                     <div id="comp-propose-rules" class="comp-propose-rules">
-                      <label>해제·참고 텍스트 <small>(한국고전종합DB 해제 같은 것을 <b>통째로</b> 붙여 넣으세요 — 권별 내용을 골라 씁니다. <span class="llm-tag">LLM</span> 스위치·단추만 읽고, 규칙은 읽지 않습니다)</small>
-                        <textarea id="comp-rules-reference" rows="4" placeholder="해제 전문을 그대로 붙여 넣어도 됩니다. 길면 권별 내용이 있는 데를 골라 LLM에 넘깁니다."></textarea>
+                      <label>해제·참고 텍스트 <small>(한국고전종합DB 해제 같은 것을 <b>통째로</b> 붙여 넣으세요 — 권별 내용을 골라 씁니다. 「LLM에 묻기」만 읽고, 규칙은 읽지 않습니다)</small>
+                        <textarea id="comp-rules-reference" rows="4" placeholder="해제 전문을 그대로 붙여 넣어도 됩니다. 길면 권별 내용이 있는 데를 골라 「LLM에 묻기」가 넘깁니다."></textarea>
                         <span id="comp-rules-reference-count" class="comp-rules-count"></span>
                       </label>
                       <label>억제 목록 <small>(표제로 보지 않을 행, 한 줄에 하나)</small>
@@ -3855,6 +3851,45 @@
                 생성
               </button>
             </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- LLM에 묻기 모달 (D-117): 편성 탭에서 모델을 부르는 진입점은 이 창 하나다.
+           LLM 단추가 여럿이면 «무엇이 모델을 부르는가»가 헷갈린다(사용자 지시 2026-09-07). -->
+      <div class="corr-dialog-overlay" id="comp-llm-overlay" style="display: none">
+        <div class="corr-dialog comp-llm-dialog">
+          <div class="bib-dialog-header">
+            <span class="bib-dialog-title">LLM에 묻기 <span class="llm-tag">LLM</span></span>
+            <div style="flex: 1"></div>
+            <button class="bib-dialog-close" id="comp-llm-close" title="닫기">&times;</button>
+          </div>
+          <div class="comp-split-note">
+            텍스트 조각만 보냅니다 — 이미지·본문 전체는 보내지 않습니다. 결과는 «자세히 · 고치기» 목록에 <b>후보</b>로
+            들어오고, 「후보 보기」·「전부 적용해 새로 세우기」를 눌러야 저장됩니다.
+          </div>
+          <label class="comp-llm-opt">
+            <input id="comp-llm-opt-toc" type="checkbox" />
+            <span><b>목차 항목 구조화</b> — 목차 쪽 텍스트와 해제만 보냅니다. <span id="comp-llm-opt-toc-note" class="comp-llm-opt-note"></span>
+            켜 두면 문헌 설정에 저장되어 「후보 보기」·「전부 적용」 때마다 씁니다 (사이드바 「자동 트리」는 쓰지 않음).</span>
+          </label>
+          <label class="comp-llm-opt">
+            <input id="comp-llm-opt-words" type="checkbox" />
+            <span><b>해제·본문에서 표제 어휘 뽑기</b> — 해제와 짧은 행 표본(≤60줄)을 보냅니다. 談草·筆談처럼 표제를 끝맺는 말의 후보를 받습니다.</span>
+          </label>
+          <label class="comp-llm-opt">
+            <input id="comp-llm-opt-patterns" type="checkbox" />
+            <span><b>시작 표지 묻기</b> — 짧은 행·행갈음 뒤·내려쓴 행 표본(≤80줄)을 보내 «새 글이 시작하는 행의 공통점»을 정해진 종류(행머리 어휘·행끝 어휘·기호·없음)로 받고, 전문에서 넷 이상 되풀이되는 것만 목록에 넣습니다. 규약을 못 찾은 책에서 특히.</span>
+          </label>
+          <label class="comp-llm-opt comp-llm-model">모델
+            <select id="comp-llm-model-select" class="props-select llm-model-select" style="font-size: 11px; max-width: 220px"
+              title="«자동»은 사용 가능한 프로바이더 순서(Ollama → Gemini …)로 넘어갑니다"></select>
+          </label>
+          <div id="comp-llm-status" class="comp-split-note"></div>
+          <div class="corr-dialog-actions">
+            <div style="flex: 1"></div>
+            <button id="comp-llm-cancel" class="text-btn">닫기</button>
+            <button id="comp-llm-run" class="text-btn text-btn-primary">묻기</button>
           </div>
         </div>
       </div>
