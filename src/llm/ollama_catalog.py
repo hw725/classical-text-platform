@@ -33,6 +33,11 @@ logger = logging.getLogger(__name__)
 # `llm.providers.ollama.OllamaProvider.DEFAULT_MODELS["vision"]`이 이 값을 쓴다.
 DEFAULT_VISION_MODEL = "gemma4:cloud"
 
+# 비전이 아닌 클라우드 후보 — OCR에는 못 쓰지만 편성·번역·주석 같은 텍스트 일에 고를 수 있다.
+# ollama.com 검색 페이지(비전 필터)에 없으므로 «은퇴했을 수 있음» 판정에서 뺀다
+# (glm-5.3:cloud가 화면에 안 보인다는 지적 2026-09-07 — 목록에 flash판만 있었다).
+TEXT_ONLY: frozenset[str] = frozenset({"glm-5.3:cloud"})
+
 # (이름, 종류, 크기 GB, 한 줄 설명). 크기는 registry.ollama.ai 매니페스트 실측(2026-09-06).
 BUILTIN: list[tuple[str, str, float, str]] = [
     ("gemma4:cloud", "cloud", 0.0, "Google Gemma 4 — 기본. 로그인만 있으면 바로 씁니다"),
@@ -41,6 +46,7 @@ BUILTIN: list[tuple[str, str, float, str]] = [
     ("kimi-k3:cloud", "cloud", 0.0, "Moonshot Kimi K3"),
     ("minimax-m3:cloud", "cloud", 0.0, "MiniMax M3"),
     ("glm-5.3-flash:cloud", "cloud", 0.0, "Zhipu GLM 5.3 Flash"),
+    ("glm-5.3:cloud", "cloud", 0.0, "Zhipu GLM 5.3 — 텍스트용(비전 아님: 편성·번역·주석에)"),
     ("gemma4:e4b", "local", 9.6, "Google Gemma 4 E4B — v1.3.0까지의 기본 모델"),
     ("gemma4:e2b", "local", 7.2, "Google Gemma 4 E2B — 조금 작은 판"),
     ("qwen3-vl:8b", "local", 6.1, "Alibaba Qwen3-VL 8B"),
@@ -63,7 +69,9 @@ def cloud_tag_exists(repo: str, timeout: float = 3.0) -> bool | None:
     (실측 2026-09-06: mistral-large-3 — 404). 출력: True/False, 네트워크가 없으면 None. 프로세스 캐시."""
     if repo in _tag_ok:
         return _tag_ok[repo]
-    req = urllib.request.Request(_REGISTRY.format(repo=repo), method="HEAD", headers={"User-Agent": "ctb-catalog"})
+    req = urllib.request.Request(
+        _REGISTRY.format(repo=repo), method="HEAD", headers={"User-Agent": "ctb-catalog"}
+    )
     try:
         with urllib.request.urlopen(req, timeout=timeout):
             ok: bool | None = True
@@ -98,7 +106,9 @@ def fetch_cloud_vision_names(timeout: float = 5.0, *, force: bool = False) -> li
             names.append(n)
     if not names:
         # 페이지는 왔는데 링크가 하나도 없다 — 구조가 바뀐 것이다. «모른다»로 다룬다.
-        logger.warning("ollama.com 검색 페이지에서 모델 링크를 찾지 못했습니다 — 구조가 바뀌었을 수 있습니다.")
+        logger.warning(
+            "ollama.com 검색 페이지에서 모델 링크를 찾지 못했습니다 — 구조가 바뀌었을 수 있습니다."
+        )
         return None
     _live.update({"names": names, "at": now})
     return names
@@ -120,7 +130,13 @@ def catalog(installed: set[str] | None = None, *, live: bool = True) -> dict:
     seen: set[str] = set()
     for name, kind, size, note in BUILTIN:
         repo = name.split(":")[0]
-        maybe_retired = kind == "cloud" and live_names is not None and repo not in live_names
+        # 검색 페이지는 «비전» 필터라 텍스트 전용 클라우드 모델은 거기 없어도 은퇴가 아니다
+        maybe_retired = (
+            kind == "cloud"
+            and name not in TEXT_ONLY
+            and live_names is not None
+            and repo not in live_names
+        )
         rows.append(
             {
                 "name": name,
