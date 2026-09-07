@@ -1799,8 +1799,14 @@ async function _suggestRules() {
     if (out) out.textContent = "문헌과 권을 먼저 고르세요.";
     return;
   }
-  const sel = document.getElementById("comp-llm-model-select");
-  const [provider, model] = (sel && sel.value ? sel.value : "").split(":");
+  // 모델 이름에는 「kimi-k3:cloud」처럼 콜론이 든다 — 첫 콜론에서만 나누는 공용 함수를 쓴다.
+  // 전에는 `split(":")`로 잘라 「kimi-k3」만 보내 Ollama 404가 났다(사용자 실측 2026-09-07).
+  const llmSel =
+    typeof getLlmModelSelection === "function"
+      ? getLlmModelSelection("comp-llm-model-select")
+      : { force_provider: null, force_model: null };
+  const provider = llmSel.force_provider;
+  const model = llmSel.force_model;
   out.textContent = "해제와 본문을 보는 중…";
   if (btn) btn.disabled = true;
   try {
