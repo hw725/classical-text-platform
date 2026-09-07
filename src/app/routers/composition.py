@@ -105,6 +105,8 @@ class SegmentationSignalsLlmRequest(BaseModel):
     part_id: str
     force_provider: str | None = None
     force_model: str | None = None
+    scope: str = "starts"  # starts·context·pages·all — 표본 범위(core.rule_induction.SAMPLE_SCOPES)
+    dry_run: bool = False  # True면 모델을 부르지 않고 표본 크기만 돌려준다(보내기 전 알림)
 
 
 class BoundaryUpdateRequest(BaseModel):
@@ -495,11 +497,7 @@ async def api_segmentation_signals_llm(doc_id: str, body: SegmentationSignalsLlm
     """
     from app._state import _get_llm_router
     from core.document import get_document_info
-    from core.rule_induction import (
-        collect_lines_any_layer,
-        extract_start_patterns_llm,
-        sample_start_lines,
-    )
+    from core.rule_induction import collect_lines_any_layer, extract_start_patterns_llm
     from core.segmentation import normalize_rules
 
     doc_path, err = _doc(doc_id)
@@ -514,6 +512,12 @@ async def api_segmentation_signals_llm(doc_id: str, body: SegmentationSignalsLlm
         return JSONResponse(
             {"error": "텍스트가 있는 쪽이 없습니다. OCR을 먼저 하세요."}, status_code=400
         )
+    from core.rule_induction import SAMPLE_SCOPES, sample_size
+
+    scope = body.scope if body.scope in SAMPLE_SCOPES else "starts"
+    if body.dry_run:
+        # 실행 게이트(전역 규칙 11)는 도구 층에 — 보내기 전에 «몇 줄·몇 자»를 화면이 보인다
+        return {"signals": [], "dry_run": True, **sample_size(lines, rules, scope)}
     rows, meta = await extract_start_patterns_llm(
         lines,
         rules,
@@ -521,8 +525,9 @@ async def api_segmentation_signals_llm(doc_id: str, body: SegmentationSignalsLlm
         body.force_provider,
         body.force_model,
         reference_text=rules.get("reference_text") or "",
+        scope=scope,
     )
-    return {"signals": rows, "sample_count": len(sample_start_lines(lines, rules)), **meta}
+    return {"signals": rows, "sample_count": meta.get("sample_lines", 0), **meta}
 
 
 @router.post("/api/documents/{doc_id}/segmentation/toc")

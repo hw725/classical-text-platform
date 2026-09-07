@@ -7852,6 +7852,7 @@ select.prop-level { max-width: 4.6em; }
 .comp-llm-opt input { margin-top: 3px; }
 .comp-llm-opt-note { color: var(--text-muted); }
 .comp-llm-model { align-items: center; font-size: 11px; color: var(--text-secondary); }
+.comp-llm-scope { display: inline-flex; align-items: center; gap: 4px; margin-left: 4px; font-size: 11px; color: var(--text-secondary); }
 .comp-split-info { font-size: 10px; color: var(--text-muted); margin-left: 6px; }
 .comp-split-note { font-size: 11px; color: var(--text-muted); line-height: 1.5; }
 .comp-split-note code { font-family: var(--font-mono); }

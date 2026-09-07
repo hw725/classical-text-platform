@@ -21,6 +21,8 @@ from src.core.rule_induction import (
     is_symbol_char,
     rules_are_empty,
     rules_from_signals,
+    sample_size,
+    sample_start_lines,
     toc_signal,
     verify_pattern,
 )
@@ -427,3 +429,63 @@ def test_signals_api_reports_stage(client, tmp_path):  # noqa: F811
     d = r.json()
     assert "stage" in d and d["stage"]["level"] in (0, 1, 2, 3)
     assert d["toc"] is None
+
+
+class TestSampleScopes:
+    def _book(self):
+        pages = []
+        for p in range(10):
+            pages.append([f"{_DAYS[p]}談草", _COL, _COL, "又" + _COL[1:], _COL, _COL])
+        return _pages(pages)
+
+    def test_starts_is_default_and_truncates(self):
+        lines = self._book()
+        rules = normalize_rules(None)
+        s = sample_start_lines(lines, rules)
+        assert 0 < len(s) <= 80 and all(len(x) <= 24 for x in s)
+        assert sample_start_lines(lines, rules, scope="starts") == s
+
+    def test_context_wraps_candidate_with_neighbours(self):
+        lines = self._book()
+        s = sample_start_lines(lines, normalize_rules(None), scope="context")
+        assert s and all("▶" in x and " ／ " in x for x in s)
+
+    def test_pages_and_all_send_whole_pages(self):
+        lines = self._book()
+        rules = normalize_rules(None)
+        pages = sample_start_lines(lines, rules, scope="pages")
+        heads = [x for x in pages if x.startswith("— ") and x.endswith("쪽 —")]
+        assert len(heads) == 6 and len(pages) == 6 * 7
+        whole = sample_start_lines(lines, rules, scope="all")
+        assert len(whole) == 10 * 7  # 쪽 머리 + 6행
+        size = sample_size(lines, rules, "all")
+        assert size["lines"] == 70 and size["chars"] == sum(len(x) for x in whole)
+
+    def test_llm_gets_scope_and_reports_size(self):
+        lines = self._book()
+        router = _FakeRouter('{"patterns": [{"kind": "head_word", "value": "又"}]}')
+        import asyncio
+
+        rows, meta = asyncio.run(
+            extract_start_patterns_llm(lines, normalize_rules(None), router, scope="pages")
+        )
+        assert [r["id"] for r in rows] == ["head_word:又"]
+        assert meta["scope"] == "pages" and meta["sample_lines"] == 42 and meta["sample_chars"] > 0
+        assert router.calls[0]["response_format"] == "json"
+
+
+def test_signals_llm_dry_run_reports_size_without_calling_model(client, tmp_path):  # noqa: F811
+    _lib, part_id = _setup(client, tmp_path)
+    r = client.post(
+        "/api/documents/d1/segmentation/signals/llm",
+        json={"part_id": part_id, "scope": "all", "dry_run": True},
+    )
+    assert r.status_code == 200, r.text
+    d = r.json()
+    assert d["dry_run"] is True and d["scope"] == "all" and d["lines"] > 0 and d["chars"] > 0
+    # 모르는 범위는 기본으로
+    r = client.post(
+        "/api/documents/d1/segmentation/signals/llm",
+        json={"part_id": part_id, "scope": "everything", "dry_run": True},
+    )
+    assert r.json()["scope"] == "starts"

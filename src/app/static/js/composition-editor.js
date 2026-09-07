@@ -95,6 +95,8 @@ function _bindCompEvents() {
     const el = document.getElementById(id);
     if (el) el.addEventListener("click", _closeLlmModal);
   }
+  const llmScope = document.getElementById("comp-llm-scope");
+  if (llmScope) llmScope.addEventListener("change", _updateLlmScopeNote);
   const llmOverlay = document.getElementById("comp-llm-overlay");
   if (llmOverlay)
     llmOverlay.addEventListener("click", (ev) => {
@@ -865,6 +867,27 @@ function _openLlmModal() {
   const status = document.getElementById("comp-llm-status");
   if (status) status.textContent = _signalsCurrent() ? "" : "먼저 「경계 제안」으로 신호를 세면 표본이 준비됩니다 — 「묻기」를 누르면 세고 나서 묻습니다.";
   overlay.style.display = "";
+  _updateLlmScopeNote();
+}
+
+/** 표본 범위의 크기(줄·글자)를 보내기 전에 보인다 — 실행 게이트는 도구 층에(전역 규칙 11). */
+async function _updateLlmScopeNote() {
+  const note = document.getElementById("comp-llm-scope-note");
+  const sel = document.getElementById("comp-llm-scope");
+  if (!note || !sel || !viewerState.docId || !viewerState.partId) return;
+  note.textContent = "크기를 재는 중…";
+  try {
+    const res = await fetch(`/api/documents/${encodeURIComponent(viewerState.docId)}/segmentation/signals/llm`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ part_id: viewerState.partId, scope: sel.value, dry_run: true }),
+    });
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.error || `HTTP ${res.status}`);
+    note.textContent = `${d.lines}줄 · ${Number(d.chars).toLocaleString()}자`;
+  } catch (e) {
+    note.textContent = `크기 못 잼: ${e.message}`;
+  }
 }
 
 function _closeLlmModal() {
@@ -952,6 +975,7 @@ async function _askLlmPatterns() {
         part_id: viewerState.partId,
         force_provider: llmSel.force_provider || null,
         force_model: llmSel.force_model || null,
+        scope: document.getElementById("comp-llm-scope")?.value || "starts",
       }),
     });
     const d = await res.json();
@@ -969,11 +993,12 @@ async function _askLlmPatterns() {
     if (details) details.open = true;
     if (out) {
       const said = (d.raw || []).map((p) => `${p.kind}:${p.value}`).filter((s) => !s.endsWith(":")).join(", ");
+      const sent = d.sample_lines != null ? ` (보낸 표본 ${d.sample_lines}줄·${Number(d.sample_chars || 0).toLocaleString()}자)` : "";
       out.textContent = d.error
         ? `LLM 실패: ${d.error}`
         : rows.length
-          ? `모델(${d.model || "?"})이 말한 ${said || "(없음)"} 중 전문에서 되풀이되는 ${rows.length}개를 목록에 넣었습니다 — 「후보 보기」로 확인하세요`
-          : `모델(${d.model || "?"})의 답 ${said || "(없음)"} 중 전문에서 넷 이상 되풀이되는 것이 없습니다 — 찍어 주세요`;
+          ? `모델(${d.model || "?"})이 말한 ${said || "(없음)"} 중 전문에서 되풀이되는 ${rows.length}개를 목록에 넣었습니다${sent} — 「후보 보기」로 확인하세요`
+          : `모델(${d.model || "?"})의 답 ${said || "(없음)"} 중 전문에서 넷 이상 되풀이되는 것이 없습니다${sent} — 표본을 넓혀 다시 묻거나 찍어 주세요`;
     }
   } catch (e) {
     if (out) out.textContent = `실패: ${e.message}`;

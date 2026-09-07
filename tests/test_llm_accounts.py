@@ -380,8 +380,13 @@ class TestDotenvEncoding:
 def test_ollama_local_model_without_signin_is_ready():
     """로그인 안 된 Ollama라도 고른 비전 모델이 로컬이면 «사용 가능»이다(2026-09-05 보고)."""
     e = _entry(
-        provider_id="ollama", display_name="Ollama", setup_kind="cli_signin",
-        reachable=True, authenticated=False, account=None, billing_model="free",
+        provider_id="ollama",
+        display_name="Ollama",
+        setup_kind="cli_signin",
+        reachable=True,
+        authenticated=False,
+        account=None,
+        billing_model="free",
         active_model="gemma4:e4b",
     )
     status, note = _account_status(e)
@@ -391,8 +396,13 @@ def test_ollama_local_model_without_signin_is_ready():
 def test_ollama_cloud_model_without_signin_needs_signin():
     """클라우드 모델을 골랐는데 로그인이 없으면 여전히 «로그인 필요» — 유료 폴백 사고를 막는다."""
     e = _entry(
-        provider_id="ollama", display_name="Ollama", setup_kind="cli_signin",
-        reachable=True, authenticated=False, account=None, billing_model="subscription",
+        provider_id="ollama",
+        display_name="Ollama",
+        setup_kind="cli_signin",
+        reachable=True,
+        authenticated=False,
+        account=None,
+        billing_model="subscription",
         active_model="qwen3.5:cloud",
     )
     assert _account_status(e)[0] == "needs_signin"
@@ -401,9 +411,15 @@ def test_ollama_cloud_model_without_signin_needs_signin():
 def test_ollama_without_installed_vision_model_says_so():
     """비전 모델이 하나도 없으면 «모델 없음»과 받을 명령을 말한다 — 로그인 여부와 무관하게."""
     e = _entry(
-        provider_id="ollama", display_name="Ollama", setup_kind="cli_signin",
-        reachable=True, authenticated=True, account="me@x", billing_model="free",
-        active_model="gemma4:e4b", active_model_installed=False,
+        provider_id="ollama",
+        display_name="Ollama",
+        setup_kind="cli_signin",
+        reachable=True,
+        authenticated=True,
+        account="me@x",
+        billing_model="free",
+        active_model="gemma4:e4b",
+        active_model_installed=False,
     )
     status, note = _account_status(e)
     assert status == "no_model" and "gemma4:e4b" in note and "받기 시작" in note
@@ -481,7 +497,9 @@ def test_catalog_marks_installed_and_puts_default_first(monkeypatch):
     # 레지스트리 확인도 가짜로 — «no-tag»는 검색 페이지에 있지만 :cloud 태그가 없는 경우(mistral-large-3 실측)
     monkeypatch.setattr(oc, "cloud_tag_exists", lambda repo, timeout=3.0: repo != "no-tag")
     out = oc.catalog({"gemma4:e4b", "glm-ocr:latest", "kimi-k3:cloud"})
-    assert "no-tag:cloud" not in {m["name"] for m in out["models"]}, "태그 없는 이름은 목록에서 뺀다"
+    assert "no-tag:cloud" not in {m["name"] for m in out["models"]}, (
+        "태그 없는 이름은 목록에서 뺀다"
+    )
     names = [m["name"] for m in out["models"]]
     assert names[0] == out["default"] == "gemma4:cloud"
     kinds = [m["kind"] for m in out["models"]]
@@ -513,8 +531,14 @@ def test_catalog_route(client, monkeypatch):
 
     monkeypatch.setattr(oc, "fetch_cloud_vision_names", lambda *a, **k: None)
     monkeypatch.setattr(
-        es, "detect_ollama",
-        lambda base_url=None: {"reachable": True, "base_url": "x", "models": ["gemma4:e4b"], "error": None},
+        es,
+        "detect_ollama",
+        lambda base_url=None: {
+            "reachable": True,
+            "base_url": "x",
+            "models": ["gemma4:e4b"],
+            "error": None,
+        },
     )
     r = client.get("/api/settings/ollama/catalog")
     assert r.status_code == 200, r.text
@@ -527,9 +551,15 @@ def test_catalog_route(client, monkeypatch):
 def test_no_model_note_for_cloud_default_points_to_login_and_chooser():
     """기본이 클라우드일 때 «모델 없음»은 크기(GB)가 아니라 로그인과 「모델 받기」를 말한다."""
     e = _entry(
-        provider_id="ollama", display_name="Ollama", setup_kind="cli_signin",
-        reachable=True, authenticated=False, account=None, billing_model="subscription",
-        active_model="gemma4:cloud", active_model_installed=False,
+        provider_id="ollama",
+        display_name="Ollama",
+        setup_kind="cli_signin",
+        reachable=True,
+        authenticated=False,
+        account=None,
+        billing_model="subscription",
+        active_model="gemma4:cloud",
+        active_model_installed=False,
     )
     status, note = _account_status(e)
     assert status == "no_model"
@@ -539,8 +569,13 @@ def test_no_model_note_for_cloud_default_points_to_login_and_chooser():
 def test_needs_signin_note_points_to_buttons_not_terminal():
     """«로그인 필요» 안내는 터미널 명령이 아니라 카드의 두 단추(로그인·모델 받기)를 가리킨다."""
     e = _entry(
-        provider_id="ollama", display_name="Ollama", setup_kind="cli_signin",
-        reachable=True, authenticated=False, account=None, billing_model="subscription",
+        provider_id="ollama",
+        display_name="Ollama",
+        setup_kind="cli_signin",
+        reachable=True,
+        authenticated=False,
+        account=None,
+        billing_model="subscription",
         active_model="gemma4:cloud",
     )
     status, note = _account_status(e)
@@ -559,9 +594,16 @@ def test_pull_log_strips_terminal_control_sequences():
 def test_dead_vision_model_is_not_ready():
     """고른 모델이 응답하지 않았으면(은퇴·로그인 실패) 깔려 있고 로그인돼 있어도 «연결됨»이 아니다."""
     e = _entry(
-        provider_id="ollama", display_name="Ollama", setup_kind="cli_signin",
-        reachable=True, authenticated=True, account="me@x", billing_model="subscription",
-        active_model="gemma4:cloud", active_model_installed=True, active_model_dead=True,
+        provider_id="ollama",
+        display_name="Ollama",
+        setup_kind="cli_signin",
+        reachable=True,
+        authenticated=True,
+        account="me@x",
+        billing_model="subscription",
+        active_model="gemma4:cloud",
+        active_model_installed=True,
+        active_model_dead=True,
     )
     status, note = _account_status(e)
     assert status == "no_model" and "응답하지 않습니다" in note and "모델 받기" in note
@@ -577,7 +619,9 @@ async def test_all_dead_leaves_a_mark_for_the_card(monkeypatch):
     assert await p._pick_vision_model() == "gemma4:cloud"
     assert p._shared_get("vision_dead") == "gemma4:cloud"
     OllamaProvider._SHARED.clear()
-    p = _ollama(monkeypatch, models=[{"name": "gemma4:cloud", "vision": True}], alive={"gemma4:cloud"})
+    p = _ollama(
+        monkeypatch, models=[{"name": "gemma4:cloud", "vision": True}], alive={"gemma4:cloud"}
+    )
     assert await p._pick_vision_model() == "gemma4:cloud"
     assert not p._shared_get("vision_dead")
 
@@ -588,8 +632,9 @@ def test_app_version_comes_from_pyproject_not_dist_info(monkeypatch):
     2026-09-06 보고: .venv-gpu의 편집 가능 설치 메타데이터가 1.2.1에 멈춰 화면에 v1.2.1이 남았다.
     """
     import importlib.metadata as md
-    import tomllib
     from pathlib import Path
+
+    import tomllib
 
     from app.server import _app_version
 
@@ -598,3 +643,71 @@ def test_app_version_comes_from_pyproject_not_dist_info(monkeypatch):
     with open(root / "pyproject.toml", "rb") as f:
         expected = tomllib.load(f)["project"]["version"]
     assert _app_version() == expected != "0.0.1"
+
+
+# ── D-118: 사고를 끌 수 없는 모델의 JSON 호출 ─────────────────────────────
+
+
+def test_looks_like_json_strips_prose_around_object():
+    from llm.providers.ollama import _looks_like_json
+
+    assert _looks_like_json('{"a": 1}')
+    assert _looks_like_json('여기 답입니다: {"a": [1, 2]} 끝.')
+    assert not _looks_like_json("The user wants me to find the word that ends the title.")
+    assert not _looks_like_json("")
+
+
+@pytest.mark.asyncio
+async def test_json_call_retries_with_thinking_when_model_writes_prose(monkeypatch):
+    """glm-5.3:cloud 실측(2026-09-07): think=False면 추론이 본문에, think=True면 JSON이 본문에 온다.
+
+    모델 이름을 코드에 적지 않고 «답이 JSON이 아니다»로 판단해 사고를 켜 한 번만 더 부른다.
+    """
+    import json as _json
+
+    import httpx
+
+    from llm.config import LlmConfig
+    from llm.providers.ollama import OllamaProvider
+
+    p = OllamaProvider(LlmConfig())
+    posts = []
+
+    class _Resp(_FakeResponse):
+        def json(self):
+            return _json.loads(self.text)
+
+    class _Client:
+        def __init__(self, *a, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, url, json=None):
+            posts.append(dict(json or {}))
+            if json.get("think") is False:
+                body = '{"response": "The user wants me to find the title word...", "done": true}'
+            else:
+                body = '{"response": "{\\"title_words\\": [\\"談草\\"]}", "thinking": "…", "done": true}'
+            return _Resp(200, body)
+
+    monkeypatch.setattr(httpx, "AsyncClient", _Client)
+    r = await p.call("행들", response_format="json", model="glm-5.3:cloud", think=False)
+    assert len(posts) == 2 and posts[0]["think"] is False and posts[1]["think"] is True
+    assert "談草" in r.text
+
+    # 답이 JSON이면 다시 부르지 않는다
+    posts.clear()
+
+    class _ClientOk(_Client):
+        async def post(self, url, json=None):
+            posts.append(dict(json or {}))
+            return _Resp(200, '{"response": "{\\"ok\\": 1}", "done": true}')
+
+    monkeypatch.setattr(httpx, "AsyncClient", _ClientOk)
+    r = await p.call("행들", response_format="json", model="gemma4:cloud", think=False)
+    assert len(posts) == 1 and '"ok"' in r.text

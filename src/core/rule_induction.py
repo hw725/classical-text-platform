@@ -606,30 +606,81 @@ START_PATTERN_SYSTEM_PROMPT = (
 )
 
 
-def sample_start_lines(lines: list[Line], rules: dict, limit: int = 80) -> list[str]:
+# 표본 범위 (D-117 4단). 기본은 «시작 자리»다 — 표지가 표면에 되풀이되는 책은 그것으로 충분하고,
+# 문맥이 있어야 보이는 표지(제목인지 시의 끝구인지)는 앞뒤 행, 자리에 규칙성이 없는 표지(행 중간의
+# 「又」「按」)는 쪽 통째, 그래도 안 보이면 권 전체. 넓을수록 토큰을 많이 쓰므로 크기를 먼저 보인다.
+SAMPLE_SCOPES = ("starts", "context", "pages", "all")
+SAMPLE_SCOPE_LABELS = {
+    "starts": "시작 자리 80줄",
+    "context": "시작 자리 80줄 + 앞뒤 한 행",
+    "pages": "6쪽 통째",
+    "all": "권 전체",
+}
+
+
+def _even(items: list, limit: int) -> list:
+    if len(items) <= limit:
+        return items
+    step = len(items) / limit
+    return [items[int(i * step)] for i in range(limit)]
+
+
+def sample_start_lines(
+    lines: list[Line], rules: dict, limit: int = 80, scope: str = "starts"
+) -> list[str]:
     """LLM에 보일 표본 — 짧은 행·행갈음 뒤의 행·내려쓴 행을 권 전체에서 고르게.
 
     왜 이 셋인가: 글의 시작은 별행 표제(짧은 행)이거나 행갈음 뒤의 첫 행이거나 내려쓴 행이다.
     본문 전체를 넘기면 토큰만 쓰고 신호는 묽어진다.
+
+    scope — "starts"(기본)·"context"(앞뒤 한 행을 붙임: «앞 ／ ▶후보 ／ 뒤»)·"pages"(고르게 고른
+    여섯 쪽의 행 전부, 쪽 머리 «— n쪽 —»)·"all"(권 전체, 쪽 머리 포함).
+    출력: 모델에 보일 줄 목록.
     """
     lines = [ln for ln in lines if ln.text.strip()]
+    if not lines:
+        return []
+    if scope in ("pages", "all"):
+        pages = sorted({ln.page for ln in lines})
+        chosen = set(pages) if scope == "all" else set(_even(pages, 6))
+        out: list[str] = []
+        cur = None
+        for ln in lines:
+            if ln.page not in chosen:
+                continue
+            if ln.page != cur:
+                cur = ln.page
+                out.append(f"— {cur}쪽 —")
+            out.append(ln.text.strip())
+        return out
     layout = _layout_signals(lines, {**rules, "use_layout": True})
-    picks: list[str] = []
+    idx: list[int] = []
     seen: set[str] = set()
-    for ln in lines:
+    for k, ln in enumerate(lines):
         sig = layout.get((ln.page, ln.line_index), [])
         if "short_line" in sig or "after_short" in sig or "indent" in sig:
             t = ln.text.strip()[:24]
             if t not in seen:
                 seen.add(t)
-                picks.append(t)
-    if not picks:
+                idx.append(k)
+    if not idx:
         # 판식 신호가 하나도 없는 책(모든 행이 꽉 찬 산문) — 행 첫머리를 고르게 보인다
-        picks = [ln.text.strip()[:24] for ln in lines]
-    if len(picks) <= limit:
-        return picks
-    step = len(picks) / limit
-    return [picks[int(i * step)] for i in range(limit)]
+        idx = list(range(len(lines)))
+    idx = _even(idx, limit)
+    if scope == "context":
+        out = []
+        for k in idx:
+            prev = lines[k - 1].text.strip()[:24] if k > 0 else ""
+            nxt = lines[k + 1].text.strip()[:24] if k + 1 < len(lines) else ""
+            out.append(f"{prev} ／ ▶{lines[k].text.strip()[:24]} ／ {nxt}")
+        return out
+    return [lines[k].text.strip()[:24] for k in idx]
+
+
+def sample_size(lines: list[Line], rules: dict, scope: str = "starts") -> dict:
+    """보내기 전에 크기를 알린다 — 줄 수·글자 수. 토큰 수는 모델마다 달라 적지 않는다."""
+    sample = sample_start_lines(lines, rules, scope=scope)
+    return {"scope": scope, "lines": len(sample), "chars": sum(len(s) for s in sample)}
 
 
 def verify_pattern(lines: list[Line], kind: str, value: str) -> Optional[dict]:
@@ -641,6 +692,10 @@ def verify_pattern(lines: list[Line], kind: str, value: str) -> Optional[dict]:
     texts = [ln.text.strip() for ln in lines]
     if not value:
         return None
+    if len(value) == 1 and is_symbol_char(value):
+        kind = (
+            "symbol"  # 모델이 «행머리 ○»라 해도 ○는 기호다 — 2단 가족으로 합친다(2026-09-07 실측)
+        )
     if kind == "head_word":
         pos = [k for k, t in enumerate(texts) if t.startswith(value)]
         sid, toggle, label = f"head_word:{value}", "head_words", f"행 첫머리 「{value}」 (LLM 후보)"
@@ -681,8 +736,12 @@ async def extract_start_patterns_llm(
     force_provider: Optional[str] = None,
     force_model: Optional[str] = None,
     reference_text: str = "",
+    scope: str = "starts",
 ) -> tuple[list[dict], dict]:
     """4단 — 표본 행을 LLM에 보여 «시작 표지»를 정해진 종류로 답받고, 코드가 세어 확인한다.
+
+    scope — sample_start_lines의 범위. 넓은 범위(쪽 통째·권 전체)에서는 표지가 행 중간에 있을 수
+    있다고 모델에 말한다.
 
     출력: (확인된 신호 행 목록, {"provider","model","error","raw","note"}). 모델이 경계를 찍지
     않는다 — «규칙 후보»를 말하고, 그것이 전문에서 되풀이되는지는 verify_pattern이 정한다.
@@ -690,17 +749,38 @@ async def extract_start_patterns_llm(
     from core.toc import reference_excerpt
 
     meta: dict = {"provider": None, "model": None, "error": None, "raw": [], "note": ""}
-    sample = sample_start_lines(lines, rules)
+    scope = scope if scope in SAMPLE_SCOPES else "starts"
+    sample = sample_start_lines(lines, rules, scope=scope)
+    meta["scope"] = scope
+    meta["sample_lines"] = len(sample)
+    meta["sample_chars"] = sum(len(s) for s in sample)
     if not sample:
         meta["error"] = "표본으로 삼을 짧은 행·행갈음 행이 없습니다."
         return [], meta
+    if scope == "starts":
+        intro = (
+            "다음은 이 책에서 «글이 시작할 법한 자리»(짧은 행·행갈음 뒤의 행·내려쓴 행)의 "
+            "표본입니다."
+        )
+    elif scope == "context":
+        intro = (
+            "다음은 이 책에서 «글이 시작할 법한 자리»의 표본입니다. "
+            "한 줄이 «앞 행 ／ ▶후보 행 ／ 뒤 행»이고 "
+            "▶가 붙은 행이 후보입니다."
+        )
+    else:
+        intro = (
+            "다음은 이 책의 쪽들을 통째로 옮긴 것입니다"
+            "(«— n쪽 —»가 쪽 머리, 그다음 줄들이 그 쪽의 행). "
+            "표지는 행 첫머리가 아니라 행 중간에 있을 수도 있습니다."
+        )
     ref = ""
     if reference_text and reference_text.strip():
         ref = "해제(판단에만 쓸 것):\n" + reference_excerpt(reference_text, 4000) + "\n\n"
     prompt = (
         ref
-        + "다음은 이 책에서 «글이 시작할 법한 자리»(짧은 행·행갈음 뒤의 행·내려쓴 행)의 "
-        + "표본입니다.\n"
+        + intro
+        + "\n"
         + "새 글의 시작 행에 되풀이되는 표지를 찾으십시오. 종류는 넷뿐입니다:\n"
         + "  head_word(행 첫머리 글자·어휘) · title_word(행을 끝맺는 어휘) · symbol(기호 한 글자)"
         + " · none(없음)\n"

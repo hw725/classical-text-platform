@@ -11,6 +11,7 @@ Ollama 로컬 서버(localhost:11434)를 통한 LLM 호출.
 """
 
 import base64
+import json
 import logging
 import time
 
@@ -26,6 +27,29 @@ from .base import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _looks_like_json(text: str) -> bool:
+    """답이 JSON 객체(또는 배열)로 읽히는가.
+
+    앞뒤 군말은 걷어 내고 본다(core.toc.lenient_json과 같은 눈).
+    """
+    t = (text or "").strip()
+    if not t:
+        return False
+    for cand in (
+        t,
+        t[t.find("{") : t.rfind("}") + 1] if "{" in t else "",
+        t[t.find("[") : t.rfind("]") + 1] if "[" in t else "",
+    ):
+        if not cand:
+            continue
+        try:
+            json.loads(cand)
+            return True
+        except ValueError:
+            continue
+    return False
 
 
 class OllamaProvider(BaseLlmProvider):
@@ -125,7 +149,9 @@ class OllamaProvider(BaseLlmProvider):
         # 사람이 .env에 localhost로 적어 두어도 127.0.0.1로 부른다 — Windows의 IPv6 우선 시도가
         # 호출마다 2초를 버리고, 느린 기기에서는 제한 시간을 넘겨 «Ollama 없음»으로 오판한다
         # (2026-09-05, 다른 PC에서 Ollama가 떠 있는데 안 잡히던 보고).
-        url = url.replace("://localhost:", "://127.0.0.1:").replace("://localhost/", "://127.0.0.1/")
+        url = url.replace("://localhost:", "://127.0.0.1:").replace(
+            "://localhost/", "://127.0.0.1/"
+        )
         # 찾아낸 주소([::1])는 사용자가 «다른» 주소를 정해 두지 않았을 때 쓴다. 기본 주소를 그대로
         # 적어 둔 것은 is_alive가 [::1]도 보는 조건과 같아야 한다 — 전에는 is_alive는 [::1]에서
         # 찾았다고 «떠 있음»으로 보고하면서 호출은 127.0.0.1로 나가 실패했다(Codex 지적 2026-09-06).
@@ -260,7 +286,9 @@ class OllamaProvider(BaseLlmProvider):
         찾은 주소는 프로세스 전체가 기억한다.
         """
         default = "http://127.0.0.1:11434"
-        configured = self.config.get("ollama_url", default).replace("://localhost:", "://127.0.0.1:")
+        configured = self.config.get("ollama_url", default).replace(
+            "://localhost:", "://127.0.0.1:"
+        )
         # 사용자가 «다른» 주소를 적어 둔 경우에만 그 주소 하나만 본다. .env.example대로
         # localhost:11434를 적어 둔 것은 기본과 같으므로 [::1] 폴백을 막지 않는다(리뷰 지적).
         explicit_other = self.config.is_set("ollama_url") and configured.rstrip("/") != default
@@ -455,17 +483,25 @@ class OllamaProvider(BaseLlmProvider):
             payload["format"] = "json"
 
         t0 = time.monotonic()
-        # 클라우드 프록시 모델(gemini-3-flash-preview:cloud 등)은
-        # 네트워크 지연이 추가되므로 타임아웃을 넉넉히 300초로 설정.
-        async with httpx.AsyncClient(timeout=300.0, trust_env=False) as client:
-            resp = await client.post(f"{self._url}/api/generate", json=payload)
-            if resp.status_code != 200:
-                raise LlmProviderError(f"Ollama 응답 {resp.status_code}: {resp.text[:200]}")
-            data = resp.json()
+        data = await self._generate(payload)
+        # D-118: JSON을 강제하고 사고를 껐는데 답이 JSON이 아니다 — 사고를 끌 수 없는 모델은
+        # 추론을 본문에 써 내려간다(glm-5.3:cloud 실측 2026-09-07: think=False면 영문 추론이
+        # response로, think=True면 추론은 thinking으로 빠지고 response에 JSON이 온다).
+        # 모델 이름을 코드에 적지 않고
+        # 행동으로 판단해 사고를 켜 **한 번만** 더 부른다. 답은 여전히 JSON만이다.
+        if (
+            response_format == "json"
+            and payload.get("think") is False
+            and not _looks_like_json(data.get("response", ""))
+        ):
+            logger.warning(
+                "Ollama %s: 사고를 끈 JSON 호출의 답이 JSON이 아니라 사고를 켜 다시 부릅니다"
+                " (D-118)",
+                selected_model,
+            )
+            payload["think"] = True
+            data = await self._generate(payload)
         elapsed = time.monotonic() - t0
-
-        if data.get("error"):
-            raise LlmProviderError(f"Ollama 에러: {data['error']}")
 
         # reasoning 모델: response가 비어 있으면 thinking을 폴백으로 사용.
         # think=True 모드에서 num_predict가 사고에 모두 소모됐을 때의 방어책.
@@ -481,6 +517,21 @@ class OllamaProvider(BaseLlmProvider):
             elapsed_sec=round(elapsed, 2),
             raw=data,
         )
+
+    async def _generate(self, payload: dict) -> dict:
+        """/api/generate 한 번. HTTP·모델 오류는 LlmProviderError로.
+
+        클라우드 프록시 모델(gemini-3-flash-preview:cloud 등)은 네트워크 지연이 추가되므로
+        타임아웃을 넉넉히 300초로 둔다.
+        """
+        async with httpx.AsyncClient(timeout=300.0, trust_env=False) as client:
+            resp = await client.post(f"{self._url}/api/generate", json=payload)
+            if resp.status_code != 200:
+                raise LlmProviderError(f"Ollama 응답 {resp.status_code}: {resp.text[:200]}")
+            data = resp.json()
+        if data.get("error"):
+            raise LlmProviderError(f"Ollama 에러: {data['error']}")
+        return data
 
     async def call_stream(
         self,
