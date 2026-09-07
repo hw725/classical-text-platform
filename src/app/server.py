@@ -5,13 +5,13 @@ D-001: 이 플랫폼의 주 인터페이스는 GUI이며, CLI는 보조 도구�
 
 아키텍처:
     이 파일은 FastAPI 앱 생성과 라우터 마운트, 미들웨어만 담당한다.
-    실제 API 엔드포인트 216개가 app/routers/ 패키지의 9개 모듈에 분산된다
+    실제 API 엔드포인트 217개가 app/routers/ 패키지의 9개 모듈에 분산된다
     (2026-09-06 실측):
 
     routers/documents.py     — 문헌 CRUD/페이지/교정/서지/파서·권 추가·경계·찍기 (43 라우트)
     routers/annotation.py    — L7 주석·사전형·인용마크 + AI보조 (34 라우트)
     routers/reading.py       — L5 표점·현토 + L6 번역 + 비고 + AI보조 (24 라우트)
-    routers/composition.py   — 편성: 내용 트리·경계·제안·목차·자동 트리·신호 도출·쪼개기·리셋 (13 라우트)
+    routers/composition.py   — 편성: 내용 트리·경계·제안·목차·자동 트리·신호 도출·LLM 표지 묻기·쪼개기·리셋 (14 라우트)
     routers/interpretations.py — 해석 CRUD·레이어·의존·엔티티·관계·태그 (22 라우트)
     routers/llm_ocr.py       — LLM 상태·분석 + OCR 실행·일괄·되돌리기·교정 패스 (24 라우트)
     routers/alignment.py     — 이체자 사전/정렬/일괄교정/문헌별 승인 (20 라우트)

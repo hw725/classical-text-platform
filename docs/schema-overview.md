@@ -130,7 +130,7 @@ schemas/
 | title_ko | string? | 한국어 제목 |
 | **\*parts[]** | array | {part_id, label, file, page_count} |
 | **\*completeness_status** | enum | file_only → text_imported → bibliography_added → ocr_done → layout_analyzed → correcting → correction_done → finalized |
-| segmentation_rules | object? | 편성 규칙(D-088·D-116) — 신호 스위치 `signals`, `title_words`·`head_words`, 판심 `furniture`, `suppress`, `reference_text`, `toc_llm`, `origin`(빈 값=아직 없음·induced·manual). 프로그램이 전문에서 찾아 채우고 사람이 고친다 |
+| segmentation_rules | object? | 편성 규칙(D-088·D-116·D-117) — 신호 스위치 `signals`, `title_words`·`head_words`, 시각 신호 `symbols`·`indent_alone`, 판심 `furniture`, `suppress`, `reference_text`, `toc_llm`, `origin`(빈 값=아직 없음·induced·manual). 프로그램이 전문에서 층계로 찾아 채우고 사람이 고친다 |
 | ocr_guidance | string? | LLM OCR 판독 지침(D-081) |
 
 ### bibliography

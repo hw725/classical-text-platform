@@ -86,6 +86,8 @@ function _bindCompEvents() {
     });
   const applyAll = document.getElementById("comp-apply-all-btn");
   if (applyAll) applyAll.addEventListener("click", _applyAllFromSignals);
+  const llmPattern = document.getElementById("comp-llm-pattern-btn");
+  if (llmPattern) llmPattern.addEventListener("click", _askLlmPatterns);
   const addBtn = document.getElementById("comp-signals-add-btn");
   const addInput = document.getElementById("comp-signals-add-word");
   if (addBtn) addBtn.addEventListener("click", _addManualWord);
@@ -750,13 +752,131 @@ function _signalsCurrent() {
 // 신호 id → 사람 말. 서버(core.rule_induction.SIGNAL_LABELS)와 같은 말을 쓴다
 const _SIGNAL_LABELS = {
   date: "날짜가 행 첫머리에", mark: "○ 권점 + 날짜", volume: "卷頭 (卷之一 …)",
+  indent_alone: "내려쓰기만으로 경계",
   short_line: "짧은 행", after_short: "행갈음 뒤의 행", indent: "내려쓰기",
 };
 function _signalLabel(id) {
+  if (id === "toc") return "목차";
   if (_SIGNAL_LABELS[id]) return _SIGNAL_LABELS[id];
   if (id.startsWith("title_word:")) return `짧은 행이 「${id.slice(11)}」로 끝남`;
   if (id.startsWith("head_word:")) return `행 첫머리 「${id.slice(10)}」`;
+  if (id.startsWith("symbol:")) return `기호 「${id.slice(7)}」`;
   return id;
+}
+
+/**
+ * 답 한 줄 (D-117) — 층계가 어디서 멈췄는지. 0단이면 LLM 단추를 내고 «자세히»를 펼친다.
+ */
+function _renderVerdict() {
+  const box = document.getElementById("comp-verdict");
+  const text = document.getElementById("comp-verdict-text");
+  const llmBtn = document.getElementById("comp-llm-pattern-btn");
+  const details = document.getElementById("comp-signals");
+  if (!box || !text) return;
+  const d = signalState.data;
+  const stage = d?.stage;
+  box.classList.remove("is-none", "is-toc");
+  if (!stage) {
+    text.textContent = "전문을 세지 못했습니다.";
+    if (llmBtn) llmBtn.hidden = true;
+    return;
+  }
+  const saved = d.saved_rules;
+  const hasSaved = !!saved && !!(saved.origin || saved.title_words?.length || saved.head_words?.length || saved.symbols?.length || Object.keys(saved.signals || {}).length);
+  text.innerHTML = "";
+  const lead = document.createElement("b");
+  lead.textContent = "이 책의 규약: ";
+  text.appendChild(lead);
+  text.appendChild(document.createTextNode(stage.summary));
+  const tag = document.createElement("span");
+  tag.className = "comp-verdict-stage";
+  tag.textContent = ` — ${stage.level ? `${stage.level}단 ${stage.name}` : "0단"}` + (hasSaved ? (saved.origin === "manual" ? " · 저장된 설정(손봄)을 따릅니다" : " · 저장된 설정") : " · 권고(아직 저장 안 됨)");
+  text.appendChild(tag);
+  if (stage.level === 1) box.classList.add("is-toc");
+  if (stage.level === 0) {
+    box.classList.add("is-none");
+    if (details) details.open = true;
+  }
+  if (llmBtn) llmBtn.hidden = stage.level !== 0 && !signalState.llmAsked;
+  // 저장된 설정이 이번 권고와 다르면(예: D-116 때 저장한 뒤 층계가 바뀜) 한 번에 권고로 돌아갈 길을 준다
+  box.querySelectorAll(".comp-verdict-reset").forEach((el) => el.remove());
+  const rec = d.recommended_rules;
+  if (hasSaved && rec && (stage.by || []).some((id) => id !== "toc" && !signalState.checked.has(id))) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "text-btn text-btn-sm comp-verdict-reset";
+    b.textContent = "권고대로";
+    b.title = "저장된 설정을 버리고 이번에 찾은 규약(권고)대로 체크합니다. 「후보 보기」나 「전부 적용」을 눌러야 저장됩니다";
+    b.addEventListener("click", () => {
+      signalState.checked = new Set();
+      signalState.manual = signalState.manual.filter((m) => m.llm);
+      for (const r of d.signals) {
+        if (r.toggle.startsWith("signals.")) {
+          if (rec.signals?.[r.toggle.slice(8)] !== false) signalState.checked.add(r.id);
+        } else if (r.toggle === "title_words" && (rec.title_words || []).includes(r.id.slice(11))) signalState.checked.add(r.id);
+        else if (r.toggle === "head_words" && (rec.head_words || []).includes(r.id.slice(10))) signalState.checked.add(r.id);
+        else if (r.toggle === "symbols" && (rec.symbols || []).includes(r.id.slice(7))) signalState.checked.add(r.id);
+        else if (r.toggle === "indent_alone" && rec.indent_alone) signalState.checked.add(r.id);
+      }
+      signalState.touched = false;
+      _renderSignals();
+      tag.textContent = ` — ${stage.level}단 ${stage.name} · 권고대로 체크함(아직 저장 안 됨)`;
+      b.remove();
+    });
+    text.appendChild(b);
+  }
+}
+
+/**
+ * 4단 (D-117): 통계가 못 찾은 책 — LLM에 «시작 표지의 공통점»을 묻는다. 표본 행만 보내고,
+ * 답은 정해진 종류로만 받으며, 전문에서 되풀이되는 것만 신호 목록에 들어온다(켤지는 사람이).
+ */
+async function _askLlmPatterns() {
+  const out = document.getElementById("comp-llm-pattern-out");
+  const btn = document.getElementById("comp-llm-pattern-btn");
+  if (!_signalsCurrent()) {
+    showToast("먼저 「경계 제안」으로 신호를 세세요.", "warning");
+    return;
+  }
+  const llmSel = typeof getLlmModelSelection === "function" ? getLlmModelSelection("comp-llm-model-select") : {};
+  if (out) out.textContent = "표본을 모델에 보내는 중…";
+  if (btn) btn.disabled = true;
+  try {
+    const res = await fetch(`/api/documents/${encodeURIComponent(viewerState.docId)}/segmentation/signals/llm`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        part_id: viewerState.partId,
+        force_provider: llmSel.force_provider || null,
+        force_model: llmSel.force_model || null,
+      }),
+    });
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.error || `HTTP ${res.status}`);
+    signalState.llmAsked = true;
+    const rows = d.signals || [];
+    for (const r of rows) {
+      const exists = _signalRows().some((x) => x.id === r.id);
+      if (!exists) signalState.manual.push({ ...r, manual: true });
+      if (r.recommended) signalState.checked.add(r.id);
+    }
+    signalState.touched = signalState.touched || rows.length > 0;
+    _renderSignals();
+    const details = document.getElementById("comp-signals");
+    if (details) details.open = true;
+    if (out) {
+      const said = (d.raw || []).map((p) => `${p.kind}:${p.value}`).filter((s) => !s.endsWith(":")).join(", ");
+      out.textContent = d.error
+        ? `LLM 실패: ${d.error}`
+        : rows.length
+          ? `모델(${d.model || "?"})이 말한 ${said || "(없음)"} 중 전문에서 되풀이되는 ${rows.length}개를 목록에 넣었습니다 — 「후보 보기」로 확인하세요`
+          : `모델(${d.model || "?"})의 답 ${said || "(없음)"} 중 전문에서 넷 이상 되풀이되는 것이 없습니다 — 찍어 주세요`;
+    }
+  } catch (e) {
+    if (out) out.textContent = `실패: ${e.message}`;
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 }
 
 /** 서버가 센 행 + 사람이 더한 행. 렌더·규칙 조립이 같은 목록을 본다. */
@@ -786,7 +906,7 @@ async function _loadSignals() {
     const res = await fetch(`/api/documents/${encodeURIComponent(docId)}/segmentation/signals`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ part_id: partId }),
+      body: JSON.stringify({ part_id: partId, toc_pages: _tocPagesFromInput() }),
     });
     const d = await res.json();
     if (!res.ok) throw new Error(d.error || `HTTP ${res.status}`);
@@ -800,7 +920,7 @@ async function _loadSignals() {
     // (서버 rules_are_empty와 같은 판정). 없으면 서버가 권고에서 만든 recommended_rules를 따른다 —
     // 주 신호를 하나도 권고하지 못한 표본에서 서버는 주 신호를 기본값(켬)으로 두는데, 화면이
     // recommended 표시만 보고 다 끄면 「전부 적용」이 «적용할 구간이 없습니다»로 끝난다(Codex 지적).
-    const hasSaved = !!saved && !!(saved.origin || saved.title_words?.length || saved.head_words?.length || Object.keys(saved.signals || {}).length);
+    const hasSaved = !!saved && !!(saved.origin || saved.title_words?.length || saved.head_words?.length || saved.symbols?.length || Object.keys(saved.signals || {}).length);
     const base = hasSaved ? saved : d.recommended_rules;
     if (base) {
       signalState.checked = new Set();
@@ -812,7 +932,16 @@ async function _loadSignals() {
           if ((base.title_words || []).includes(s.id.slice(11))) signalState.checked.add(s.id);
         } else if (s.toggle === "head_words") {
           if ((base.head_words || []).includes(s.id.slice(10))) signalState.checked.add(s.id);
+        } else if (s.toggle === "symbols") {
+          if ((base.symbols || []).includes(s.id.slice(7))) signalState.checked.add(s.id);
+        } else if (s.toggle === "indent_alone") {
+          if (base.indent_alone) signalState.checked.add(s.id);
         }
+      }
+      for (const w of base.symbols || []) {
+        const id = `symbol:${w}`;
+        if (!ids.has(id)) signalState.manual.push({ id, toggle: "symbols", label: `기호 「${w}」 (손으로 넣음)`, manual: true, group: "visual" });
+        signalState.checked.add(id);
       }
       for (const w of base.title_words || []) {
         const id = `title_word:${w}`;
@@ -844,9 +973,18 @@ async function _loadSignals() {
         : `확정본 ${src.l4_pages}쪽`;
       summary.textContent = `${d.lines}행 (${where}) · ` + (hasSaved ? (saved.origin === "manual" || !saved.origin ? "저장된 설정(손봄)" : "저장된 설정(자동 도출)") : "아직 저장 안 됨 — 권고 상태");
     }
+    signalState.llmAsked = false;
     _renderSignals();
+    _renderVerdict();
+    // 목차 줄 — 층계 1단의 결과를 그대로 적는다(목차 감지 라우트를 또 부르지 않는다)
+    const tocSummary = document.getElementById("comp-toc-summary");
+    if (tocSummary && d.toc) {
+      tocSummary.textContent = `${d.toc.pages.join(",")}쪽 · ${d.toc.entries}항목 중 ${d.toc.matched} 대조` + (d.toc.decisive ? " (규약)" : " (약함)");
+    }
   } catch (e) {
     list.innerHTML = `<div class="placeholder">신호를 세지 못했습니다: ${e.message}</div>`;
+    const text = document.getElementById("comp-verdict-text");
+    if (text) text.textContent = `전문을 세지 못했습니다: ${e.message}`;
   }
 }
 
@@ -867,7 +1005,8 @@ function _renderSignals() {
   if (!list) return;
   list.innerHTML = "";
   // 주 신호(혼자 후보를 만드는 것)를 앞에, 보조를 뒤에 — 점수 순서대로 섞이면 «무엇이 규약인가»가 안 보인다
-  const rows = _signalRows().sort((a, b) => (a.group === "aux") - (b.group === "aux"));
+  const order = { visual: 0, primary: 1, aux: 2 };
+  const rows = _signalRows().sort((a, b) => (order[a.group] ?? 1) - (order[b.group] ?? 1));
   if (!rows.length) {
     list.innerHTML = '<div class="placeholder">되풀이되는 표지를 찾지 못했습니다. 어휘를 직접 더하거나 목차를 쓰세요.</div>';
   }
@@ -970,6 +1109,8 @@ function _addManualWord() {
   if (w.startsWith("^")) {
     w = w.slice(1).trim();
     if (w) _addWordRow(`head_word:${w}`, "head_words", `행 첫머리 「${w}」 (손으로 넣음)`);
+  } else if (w.length === 1 && !/[\p{L}\p{N}]/u.test(w)) {
+    _addWordRow(`symbol:${w}`, "symbols", `기호 「${w}」 (손으로 넣음)`);
   } else {
     _addWordRow(`title_word:${w}`, "title_words", `「${w}」로 끝남 (손으로 넣음)`);
   }
@@ -1085,7 +1226,7 @@ async function _detectToc(useLlm) {
       return null;
     }
     proposeState.toc = { pages: data.toc_pages, entries: data.entries };
-    if (summary)
+    if (summary && (useLlm || !summary.textContent || summary.textContent === "찾는 중…"))
       summary.textContent = `${data.toc_pages.join(",")}쪽 · ${data.entries.length}항목 (${proposeState.tocSource})`;
     const input = document.getElementById("comp-toc-pages");
     if (input && !input.value) input.value = data.toc_pages.join(",");
@@ -1119,12 +1260,16 @@ function _rulesFromForm() {
   const signals = { ...(saved.signals || {}) };
   const title_words = [];
   const head_words = [];
+  const symbols = [];
+  let indent_alone = false;
   let touched = signalState.touched;
   for (const row of _signalRows()) {
     const on = signalState.checked.has(row.id);
     if (row.toggle.startsWith("signals.")) signals[row.toggle.slice(8)] = on;
     else if (on && row.toggle === "title_words") title_words.push(row.id.slice("title_word:".length));
     else if (on && row.toggle === "head_words") head_words.push(row.id.slice("head_word:".length));
+    else if (on && row.toggle === "symbols") symbols.push(row.id.slice("symbol:".length));
+    else if (on && row.toggle === "indent_alone") indent_alone = true;
     if (row.manual || on !== !!row.recommended) touched = true;
   }
   const induced = signalState.data?.furniture || [];
@@ -1135,6 +1280,8 @@ function _rulesFromForm() {
     signals,
     title_words,
     head_words,
+    symbols,
+    indent_alone,
     furniture,
     suppress,
     max_title_chars: maxChars,
@@ -1292,6 +1439,8 @@ async function _openProposePanel() {
   proposeState.toc = null;
   const summary = document.getElementById("comp-toc-summary");
   if (summary) summary.textContent = "찾는 중…";
+  // 목차는 신호 세기의 1단이다(D-117). 제안에 넘길 항목 목록은 _detectToc(규칙)가 만든다 —
+  // 둘이 같은 규칙(detect_toc_pages·extract_toc_entries_rule)을 쓰므로 어긋나지 않는다.
   await Promise.all([_loadSignals(), _detectToc(false)]);
   await _proposeBoundaries();
 }
@@ -1423,7 +1572,7 @@ function _renderProposals() {
   list.innerHTML = "";
   if (!data.proposals.length) {
     list.innerHTML =
-      '<div class="placeholder">경계 후보가 없습니다. 위 「이 책의 신호」에서 신호를 더 켜거나 어휘를 더해 보세요 (예: 談草, ^有).</div>';
+      '<div class="placeholder">경계 후보가 없습니다. 위 「자세히 · 고치기」에서 신호를 더 켜거나 어휘를 더해 보세요 (예: 談草, ^有).</div>';
     return;
   }
   // 문턱 아래 후보는 기본으로 숨긴다 — 보이는 목록은 «승인 후보»여야 읽힌다

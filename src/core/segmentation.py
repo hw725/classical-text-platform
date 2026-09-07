@@ -169,6 +169,11 @@ DEFAULT_RULES: dict = {
     "toc_llm": False,
     # origin: "induced"(프로그램이 전문에서 찾음)·"manual"(사람이 손봄)·""(아직 없음).
     "origin": "",
+    # ── D-117: 시각 신호(층계 2단) ──
+    # symbols: 되풀이되는 기호(○●△ …). 기호 자리마다 후보가 선다 — 날짜가 없어도.
+    "symbols": [],
+    # indent_alone: 내려쓰기만으로 경계를 세운다(bbox가 있는 쪽). 시집처럼 제목만 내려쓴 판식.
+    "indent_alone": False,
 }
 
 _SIGNAL_KEYS = ("date", "mark", "volume", "short_line", "after_short", "indent")
@@ -206,6 +211,8 @@ def normalize_rules(rules: Optional[dict]) -> dict:
     out["signals"] = sig
     out["toc_llm"] = bool(out.get("toc_llm"))
     out["origin"] = str(out.get("origin") or "")
+    out["symbols"] = [str(c)[0] for c in (out.get("symbols") or []) if str(c).strip()]
+    out["indent_alone"] = bool(out.get("indent_alone"))
     return out
 
 
@@ -360,8 +367,12 @@ def _find_title_word(text: str, words: list[str], limit: int) -> tuple[str, int]
     return best
 
 
-def _line_candidates(raw: str, next_text: str = "") -> list[tuple[int, str]]:
+def _line_candidates(
+    raw: str, next_text: str = "", symbols: tuple[str, ...] | list[str] = ()
+) -> list[tuple[int, str]]:
     """행 하나에서 경계 후보가 설 자리 — 행 첫머리(0)와 행 안의 ○+날짜 자리. 오프셋은 raw 기준.
+
+    symbols — 문헌 규칙의 기호 목록(D-117). 적힌 기호는 날짜가 없어도 그 **뒤**가 후보다.
 
     왜: 澹齋日錄류 일기는 개행 없이 「…○七日晴…○八日雨…」처럼 열 중간에서 날이 바뀐다.
     행 단위 앵커로는 이런 판식을 자를 수 없다(D-090 «남은 것»). ○ 뒤에 날짜 문법이 있을 때만
@@ -378,6 +389,13 @@ def _line_candidates(raw: str, next_text: str = "") -> list[tuple[int, str]]:
         sub = raw[m.start() :].strip()
         if parse_date_head(sub).present or parse_wrapped_date_head(sub, next_text).present:
             out.append((m.start(), sub))
+    if symbols:
+        taken = {off for off, _t in out}
+        for i, ch in enumerate(raw):
+            if ch in symbols and i > lead and i not in taken and raw[i:].strip(" ") != ch:
+                # 기호 자리(기호 포함)에서 후보 — 제목은 기호 다음 글자부터
+                out.append((i, raw[i:].strip()))
+    out.sort(key=lambda t: t[0])
     return out
 
 
@@ -583,7 +601,13 @@ def propose_boundaries(
         )
         use_mark = signal_on(rules, "mark")
         use_date = signal_on(rules, "date") or use_mark
-        for char_offset, text in _line_candidates(ln.text, next_text):
+        for char_offset, text in _line_candidates(ln.text, next_text, rules["symbols"]):
+            # 기호 후보(D-117): 이 자리가 문헌 규칙의 기호로 시작하는가. 행 첫머리 기호도 센다.
+            sym = text[0] if text and text[0] in rules["symbols"] else ""
+            if sym:
+                text = text[1:].lstrip()  # 제목·날짜는 기호 다음부터
+                if not text:
+                    continue
             head = parse_date_head(text) if use_date else DateHead()
             if use_date and not head.present:
                 head = parse_wrapped_date_head(text, next_text)
@@ -604,7 +628,11 @@ def propose_boundaries(
             #          → 끄면 그 후보가 사라진다
             #   date = ○ 없이 행 첫머리에 온 날짜 → 끄면 그 후보가 사라진다
             # 전에는 mark를 꺼도 행 중간 ○+날짜가 «날짜» 후보로 살아남았다(Codex 지적 2026-09-07).
-            marked = head.present and (head.mark or char_offset > 0)
+            if sym and head.present:
+                # 기호 뒤의 날짜 — 기호를 떼고 읽었으니 ○ 표지를 여기서 되돌려 준다
+                # (mark 보너스·사슬 예외)
+                head.mark = True
+            marked = head.present and (head.mark or char_offset > 0) and not sym
             if marked and not use_mark:
                 head = DateHead()
             elif head.present and not head.mark and not signal_on(rules, "date"):
@@ -628,11 +656,27 @@ def propose_boundaries(
                 if char_offset == 0 and signal_on(rules, "volume")
                 else None
             )
-            if not head.present and not word and toc is None and vol is None:
+            indent_alone = bool(rules["indent_alone"] and "indent" in sig)
+            if (
+                not head.present
+                and not word
+                and toc is None
+                and vol is None
+                and not sym
+                and not indent_alone
+            ):
                 continue
 
             reasons: list[str] = []
             conf = 0.0
+            if sym:
+                # 되풀이되는 기호 그 자체가 표지다(D-117 2단). 날짜가 붙으면 mark 보너스가 더 온다.
+                conf += 0.5
+                reasons.append(f"symbol:{sym}")
+            if indent_alone and not head.present and not word and toc is None and vol is None:
+                # 내려쓰기만으로 경계 — 아래 indent 보너스(+0.25)와 합쳐 문턱(0.5)을 넘는다
+                conf += 0.25
+                reasons.append("indent_alone")
             if toc is not None:
                 # 목차가 «여기서 글이 시작한다»고 적어 둔 행 — 가장 강한 신호
                 conf += 0.5 + 0.2 * float(toc.get("score", 0))

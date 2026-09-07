@@ -16,12 +16,16 @@ import json
 from pathlib import Path
 
 from src.core.rule_induction import (
+    extract_start_patterns_llm,
     induce_signals,
+    is_symbol_char,
     rules_are_empty,
     rules_from_signals,
+    toc_signal,
+    verify_pattern,
 )
 from src.core.segmentation import Line, normalize_rules, propose_boundaries
-from tests.test_segmentation import BODY, _setup, client  # noqa: F401 — fixture 재사용
+from tests.test_segmentation import BODY, _FakeRouter, _setup, client  # noqa: F401 — fixture 재사용
 
 _COL = "本文本文本文本文本文本文本文本文本文本文"  # 20자 — 열 용량
 _DAYS = [
@@ -74,9 +78,14 @@ def _diary_pages(n_pages=6, per_page=8, furniture="書"):
 class TestInduce:
     def test_mark_date_diary_is_recognised(self):
         r = induce_signals(_diary_pages())
-        top = r["signals"][0]
-        assert top["id"] == "mark" and top["recommended"] is True
-        assert top["count"] >= 20 and top["chain"] is not None and top["chain"] >= 0.9
+        # 층계(D-117): 눈에 띄는 기호 ○가 2단에서 규약으로 결정되고,
+        # 날짜 사슬이 또렷한 mark도 함께 켜진다
+        assert r["stage"]["level"] == 2 and "symbol:○" in r["stage"]["by"]
+        rows = {s["id"]: s for s in r["signals"]}
+        assert rows["symbol:○"]["recommended"] is True
+        mark = rows["mark"]
+        assert mark["recommended"] is True
+        assert mark["count"] >= 20 and mark["chain"] is not None and mark["chain"] >= 0.9
         # 쪽마다 한 번 같은 자리의 「書」는 글의 규약이 아니다
         assert "書" in r["furniture"]
         assert all(s["id"] != "head_word:書" for s in r["signals"])
@@ -294,3 +303,127 @@ def test_auto_tree_skips_toc_when_switched_off(client, tmp_path):  # noqa: F811
     )
     assert r.status_code == 200, r.text
     assert r.json()["toc_pages"] == []
+
+
+# ── 층계 (D-117) ─────────────────────────────────────────────────────────
+
+
+class TestCascade:
+    def test_toc_pages_are_not_counted_and_toc_decides(self):
+        """목차가 본문과 대조되면 1단에서 멈추고, 목차 쪽의 짧은 행은 규약으로 배우지 않는다."""
+        titles = [f"第{_DAYS[i]}篇" for i in range(8)]
+        toc_page = ["目錄"] + [f"{t} {i + 1}" for i, t in enumerate(titles)]
+        body_pages = [[titles[i], _COL, _COL, _COL] for i in range(8)]
+        lines = _pages([toc_page] + body_pages)
+        toc = toc_signal(lines)
+        assert toc and toc["pages"] == [1] and toc["decisive"], toc
+        r = induce_signals(lines, None, toc=toc)
+        assert r["stage"]["level"] == 1 and r["stage"]["by"] == ["toc"]
+        # 목차 쪽의 「第…篇」 행은 세지 않았다 — 본문에서만 8회
+        first = [s for s in r["signals"] if s["id"] == "head_word:第"]
+        assert not first or first[0]["count"] == 8
+        # 텍스트 신호는 권고하지 않는다(1단에서 멈춤) — 보조만 켠다
+        assert all(not s["recommended"] for s in r["signals"] if s["group"] != "aux")
+        assert r["stage"]["summary"].startswith("목차 ")
+
+    def test_symbol_family_decides_stage_two(self):
+        # 「●」가 두 행마다 한 번 — 날짜가 없어도 시각 신호(2단)가 규약이다
+        pages = [
+            [f"{_COL[:9]}●{_COL[:10]}" if i % 2 == 0 else _COL for i in range(8)] for _ in range(5)
+        ]
+        r = induce_signals(_pages(pages))
+        assert r["stage"]["level"] == 2 and "symbol:●" in r["stage"]["by"]
+        rules = rules_from_signals(r)
+        assert rules["symbols"] == ["●"] and rules["indent_alone"] is False
+
+    def test_punctuation_is_not_a_symbol(self):
+        assert is_symbol_char("●") and is_symbol_char("○") and is_symbol_char("△")
+        assert not is_symbol_char("、") and not is_symbol_char("。") and not is_symbol_char("「")
+        assert not is_symbol_char("□") and not is_symbol_char("本") and not is_symbol_char("1")
+
+    def test_indent_runs_are_not_a_boundary_convention(self):
+        # 내려쓴 행이 줄지어 오면(협주·시 본문) 덩어리다 — 내려쓰기 단독은 규약이 아니다
+        rows = []
+        for i in range(24):
+            # 여덟 행마다 셋이 붙어서 내려쓴다 —
+            # 절반이 내려쓰면 «본문 위치»의 중앙값이 흔들려 시험이 안 된다
+            indented = (i % 8) in (2, 3, 4)
+            top = 40 if indented else 10
+            rows.append(Line(1, i, _COL, bbox=[10, top, 30, top + 400]))
+        r = induce_signals(rows)
+        ind = [s for s in r["signals"] if s["id"] == "indent_alone"]
+        assert ind and ind[0]["adjacent"] > 0.5 and not ind[0]["recommended"]
+        assert r["stage"]["level"] != 2 or "indent_alone" not in r["stage"]["by"]
+
+    def test_weak_toc_falls_through_and_says_so(self):
+        # 목차 쪽은 잡혔지만 본문과 거의 대조되지 않는다 — 3단으로 내려가되 요약에 «약함»을 적는다
+        toc_page = ["目錄"] + [f"甲{i}篇 {i + 1}" for i in range(8)]
+        body = [[f"{_DAYS[i]}談草", _COL, _COL, _COL] for i in range(8)]
+        lines = _pages([toc_page] + body)
+        toc = toc_signal(lines)
+        if toc is None:  # 판별 규칙이 이 합성 목차를 못 잡을 수도 있다 — 그러면 시험 대상이 아니다
+            return
+        assert not toc["decisive"]
+        r = induce_signals(lines, None, toc=toc)
+        assert r["stage"]["level"] == 3 and "약함" in r["stage"]["summary"]
+
+
+class TestProposerVisualRules:
+    def test_symbol_alone_makes_candidates(self):
+        lines = _pages([[_COL, f"{_COL[:9]}●{_COL[:10]}", _COL, f"●{_COL[:12]}", _COL]])
+        none = propose_boundaries(lines, None)
+        assert none["stats"]["proposals"] == 0
+        r = propose_boundaries(lines, {"symbols": ["●"]})
+        acc = [p for p in r["proposals"] if p["accepted"]]
+        assert len(acc) == 2
+        assert all("symbol:●" in p["reasons"] for p in acc)
+        mid = next(p for p in acc if p["char_offset"] > 0)
+        assert mid["char_offset"] == 9 and not mid["title"].startswith("●")
+
+    def test_symbol_with_date_keeps_mark_reason(self):
+        lines = _diary_pages(n_pages=2, furniture=_COL)
+        r = propose_boundaries(lines, {"symbols": ["○"]})
+        acc = [p for p in r["proposals"] if p["accepted"]]
+        assert acc and all("mark" in p["reasons"] and "symbol:○" in p["reasons"] for p in acc)
+
+    def test_indent_alone_rule(self):
+        rows = [Line(1, i, _COL, bbox=[10, 40 if i in (2, 6) else 10, 30, 400]) for i in range(9)]
+        assert propose_boundaries(rows, None)["stats"]["proposals"] == 0
+        r = propose_boundaries(rows, {"indent_alone": True})
+        acc = [p for p in r["proposals"] if p["accepted"]]
+        assert [p["line_index"] for p in acc] == [2, 6]
+        assert "indent_alone" in acc[0]["reasons"]
+
+
+class TestLlmPatterns:
+    def test_verify_pattern_counts_in_text(self):
+        pages = [["又" + _COL[1:], _COL, _COL, "又" + _COL[1:], _COL, _COL] for _ in range(4)]
+        lines = _pages(pages)
+        row = verify_pattern(lines, "head_word", "又")
+        assert row and row["count"] == 8 and row["toggle"] == "head_words" and row["llm"] is True
+        assert verify_pattern(lines, "head_word", "無") is None  # 전문에 없다
+        assert verify_pattern(lines, "symbol", "又") is None  # 기호가 아니다
+
+    def test_llm_answer_is_verified_not_trusted(self):
+        pages = [["又" + _COL[1:], _COL, _COL, "答" + _COL[1:], _COL, _COL] for _ in range(4)]
+        lines = _pages(pages)
+        router = _FakeRouter(
+            '{"patterns": [{"kind": "head_word", "value": "又", "why": "x"},'
+            ' {"kind": "head_word", "value": "無", "why": "지어냄"},'
+            ' {"kind": "none"}], "note": "n"}'
+        )
+        import asyncio
+
+        rows, meta = asyncio.run(extract_start_patterns_llm(lines, normalize_rules(None), router))
+        assert [r["id"] for r in rows] == ["head_word:又"]
+        assert meta["model"] == "fake-1" and len(meta["raw"]) == 3
+        assert router.calls[0]["response_format"] == "json" and router.calls[0]["think"] is False
+
+
+def test_signals_api_reports_stage(client, tmp_path):  # noqa: F811
+    _lib, part_id = _setup(client, tmp_path)
+    r = client.post("/api/documents/d1/segmentation/signals", json={"part_id": part_id})
+    assert r.status_code == 200, r.text
+    d = r.json()
+    assert "stage" in d and d["stage"]["level"] in (0, 1, 2, 3)
+    assert d["toc"] is None

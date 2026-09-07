@@ -1008,13 +1008,12 @@ async function _autoTree() {
   }
   const n = contentsState.data?.total_units || 0;
   // 확정본(L4)만 읽는다는 말을 여기서 한다 — OCR만 돌린 쪽은 규칙이 보지 못한다.
-  const how = "확정본(L4)이 있는 쪽에서 이 책의 신호(목차·卷頭·날짜·○권점·어휘)로 개요를 세웁니다.\n신호 설정이 아직 없으면 전문에서 찾아 문헌 설정에 저장합니다 (편성 인덱스 「경계 제안」에서 고칠 수 있음).";
+  const how = "확정본(L4)이 있는 쪽에서 이 책의 규약(목차 → 기호·내려쓰기 → 날짜·어휘)으로 개요를 세웁니다 (규칙만, LLM 안 씀).\n신호 설정이 아직 없으면 전문에서 찾아 문헌 설정에 저장합니다 (편성 인덱스 「경계 제안」에서 고칠 수 있음).";
   const msg = n ? `이 권의 단위 ${n}개를 지우고 개요를 다시 세웁니다.\n${how} 계속할까요?` : `${how} 계속할까요?`;
   if (!confirm(msg)) return;
-  // 규칙과 LLM의 경계: 경계 찾기 자체는 언제나 규칙이고, LLM은 «목차가 잡혔을 때 그 항목을
-  // 구조화하는 일»에만 쓰인다(텍스트만 보낸다). 쓸지는 편성 탭 목차 줄의 스위치(문헌 설정
-  // toc_llm)가 정한다 — 여기서 되묻지 않는다(D-116: 사이드바 단추는 바로 가기다).
-  const llmSel = typeof getLlmModelSelection === "function" ? getLlmModelSelection("comp-llm-model-select") : {};
+  // 이 단추는 LLM을 부르지 않는다(D-117 ③-B). 배지 없는 단추가 모델을 부르면 «표시 없는 것은
+  // LLM을 안 쓴다»(D-115)에 예외가 생긴다. 목차 항목 구조화에 모델을 쓰려면 스위치가 보이는
+  // 편성 탭에서 「전부 적용해 새로 세우기」를 누른다. 경계 찾기(층계 1~3단)는 언제나 규칙이다.
   const btn = document.getElementById("contents-auto-btn");
   if (btn) { btn.disabled = true; btn.textContent = "세우는 중…"; }
   try {
@@ -1023,15 +1022,13 @@ async function _autoTree() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         part_id: viewerState.partId,
-        use_llm_toc: null, // 저장된 규칙의 toc_llm을 따른다
-        force_provider: llmSel.force_provider || null,
-        force_model: llmSel.force_model || null,
+        use_llm_toc: false, // 사이드바는 규칙만 — 저장된 toc_llm이 켜져 있어도 부르지 않는다
         replace: "all",
       }),
     });
     const d = await res.json();
     if (!res.ok) throw new Error(d.error || `HTTP ${res.status}`);
-    showToast(describeAutoTreeResult(d, d.llm_toc), "success");
+    showToast(describeAutoTreeResult(d, false), "success");
     // 일부 쪽에만 확정본이 있으면 나머지는 규칙이 보지도 못했다 — 「후보 0」의 흔한 원인.
     if (d.pages_total && d.pages_with_text < d.pages_total) {
       showToast(
@@ -1059,6 +1056,7 @@ function describeAutoTreeResult(d, useLlm) {
   let text = `${how}${toc}후보 ${d.proposals} 중 ${d.applied}개로 개요를 세웠습니다`;
   if (d.removed) text += ` (이전 ${d.removed}개 정리)`;
   if (d.unmatched_toc?.length) text += ` · 목차에만 있는 항목 ${d.unmatched_toc.length}`;
+  if (d.stage && d.stage.summary) text += ` · 이 책의 규약: ${d.stage.summary}`;
   if (d.induced) {
     // 이번에 전문에서 규약을 새로 찾아 저장했다 — 무엇을 켰는지 말한다(D-116)
     const names = d.induced

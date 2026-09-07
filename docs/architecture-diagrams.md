@@ -12,7 +12,7 @@
 > |---|---|
 > | 6 · 11 · 13 | 추출 모드와 화면 구조 — 전면 개작. 13번은 새로 만든 것 |
 > | 1 · 5 · 9 · 10 | 텍스트 레이어 PDF 산출, 쪽 전면 1블록, 부분 재-OCR, 되돌리기 |
-> | 2 · 8 | 라우트 216개 · JS 모듈 32개 · API 캐시 금지 미들웨어 |
+> | 2 · 8 | 라우트 217개 · JS 모듈 32개 · API 캐시 금지 미들웨어 |
 > | 4 | LLM 사용량을 화면에 표시(D-056), LLM Vision OCR을 소비자로 추가 |
 > | 3 · 7 · 12 | **v1.3.0에서 바뀜** — 코어 엔티티가 6종으로(경계 목록 추가 D-092, Work 삭제 D-099), 경계 목록은 **원본 저장소**에 산다(D-097). 스키마 19개, L7 주석 4단계는 그대로 |
 >
@@ -114,7 +114,7 @@ flowchart TB
 
 ## 2. 전체 시스템 아키텍처
 
-프론트엔드(32개 JS 모듈) · 백엔드(FastAPI + 9 라우터, 라우트 216개) ·
+프론트엔드(32개 JS 모듈) · 백엔드(FastAPI + 9 라우터, 라우트 217개) ·
 처리 엔진(OCR 5종 + LLM 5단 + 산출·검출 보조) · Git 저장소 · 외부 서비스.
 
 **여기서 읽어야 할 것**: 화면과 서버 사이에는 REST API 하나뿐이고 빌드 도구도
@@ -183,12 +183,12 @@ flowchart TB
         SRV["server.py<br/>앱 생성 + 라우터 마운트 + 캐시 금지 (152줄)"]
         ST["_state.py<br/>공유 상태 · 헬퍼 · LLM/OCR 캐시"]
         MW["미들웨어<br/>API 응답에 Cache-Control no-store<br/>정적 파일에는 no-cache + ETag (D-066)"]
-        subgraph ROUTERS["9개 도메인 라우터 (라우트 216개)"]
+        subgraph ROUTERS["9개 도메인 라우터 (라우트 217개)"]
             direction LR
             R1["library <b>29</b>"]
             R2["documents <b>43</b>"]
             R3["interpretations <b>22</b>"]
-            R9["composition <b>13</b>"]
+            R9["composition <b>14</b>"]
             R4["llm_ocr <b>24</b>"]
             R5["alignment <b>20</b>"]
             R6["reading <b>24</b>"]
@@ -666,12 +666,12 @@ flowchart TB
         MAIN["__main__.py<br/>CLI 진입점"]
         SRV["<b>server.py</b><br/>FastAPI 앱 생성 · 라우터 마운트 · 캐시 금지 (152줄)"]
         STATE["<b>_state.py</b><br/>공유 상태, 헬퍼 · LLM 캐시, 토큰 계산"]
-        subgraph ROUTERS["routers/ -- 9개 도메인 · 라우트 216개"]
+        subgraph ROUTERS["routers/ -- 9개 도메인 · 라우트 217개"]
             direction LR
             R1["library <b>29</b>"]
             R2["documents <b>43</b>"]
             R3["interpretations <b>22</b>"]
-            R9["composition <b>13</b>"]
+            R9["composition <b>14</b>"]
             R4["llm_ocr <b>24</b>"]
             R5["alignment <b>20</b>"]
             R6["reading <b>24</b>"]
