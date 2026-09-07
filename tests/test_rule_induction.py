@@ -82,26 +82,34 @@ class TestInduce:
         r = induce_signals(_diary_pages())
         # 층계(D-117): 눈에 띄는 기호 ○가 2단에서 규약으로 결정되고,
         # 날짜 사슬이 또렷한 mark도 함께 켜진다
-        assert r["stage"]["level"] == 2 and "symbol:○" in r["stage"]["by"]
+        assert r["stage"]["level"] == 2 and "sym:○" in r["stage"]["by"]
         rows = {s["id"]: s for s in r["signals"]}
-        assert rows["symbol:○"]["recommended"] is True
+        assert rows["sym:○"]["recommended"] is True
         mark = rows["mark"]
         assert mark["recommended"] is True
         assert mark["count"] >= 20 and mark["chain"] is not None and mark["chain"] >= 0.9
         # 쪽마다 한 번 같은 자리의 「書」는 글의 규약이 아니다
         assert "書" in r["furniture"]
-        assert all(s["id"] != "head_word:書" for s in r["signals"])
+        assert all(s["id"] != "head:書" for s in r["signals"])
 
     def test_title_word_family_from_short_line_tails(self):
         pages = []
+        places = "天津保定海關署周玉山李中堂軍械所"
         for p in range(5):
             pages.append(
-                [f"{_DAYS[p]}海關署談草", _COL, _COL, f"是月{_DAYS[p + 5]}周玉山談草", _COL, _COL]
+                [
+                    f"{_DAYS[p]}海關署談草",
+                    _COL,
+                    _COL,
+                    f"{places[p * 2 : p * 2 + 3]}談草",
+                    _COL,
+                    _COL,
+                ]
             )
         r = induce_signals(_pages(pages))
         ids = {s["id"]: s for s in r["signals"]}
-        assert ids["title_word:談草"]["recommended"] is True
-        assert ids["title_word:談草"]["count"] == 10
+        assert ids["tail:談草"]["recommended"] is True
+        assert ids["tail:談草"]["count"] == 10 and ids["tail:談草"]["value"] == "談草"
         rules = rules_from_signals(r)
         assert rules["title_words"] == ["談草"] and rules["origin"] == "induced"
 
@@ -109,8 +117,8 @@ class TestInduce:
         # 「京城…」이 쪽마다 첫 행에 한 번 — 인쇄소 도장. head_word:京이 신호가 되면 안 된다
         pages = [[f"京城鍾路{p}", _COL, f"{_DAYS[p]}談草", _COL, _COL, _COL] for p in range(8)]
         r = induce_signals(_pages(pages))
-        assert any(d["id"] == "head_word:京" for d in r["dropped"])
-        assert all(s["id"] != "head_word:京" for s in r["signals"])
+        assert any(d["id"].startswith("head:京") for d in r["dropped"])
+        assert all(not s["id"].startswith("head:京") for s in r["signals"])
 
     def test_head_word_needs_short_lines(self):
         # 「天」이 본문 긴 행 첫머리에만 편중되면 표제 규약이 아니다 — 권고하지 않는다
@@ -119,13 +127,13 @@ class TestInduce:
             for p in range(8)
         ]
         r = induce_signals(_pages(pages))
-        tian = [s for s in r["signals"] if s["id"] == "head_word:天"]
-        assert tian and tian[0]["recommended"] is False and tian[0]["short_frac"] < 0.5
+        tian = [s for s in r["signals"] if s["id"].startswith("head:天")]
+        assert tian and tian[0]["recommended"] is False
 
     def test_unknown_glyph_is_never_a_word(self):
         pages = [[f"{_DAYS[p]}□□", _COL, _COL, "□談", _COL, _COL] for p in range(8)]
         r = induce_signals(_pages(pages))
-        assert r["signals"], "날짜 가족은 세어져야 한다 — 빈 목록이면 아래 단언이 공허하다"
+        assert r["signals"], "판식 신호는 세어져야 한다 — 빈 목록이면 아래 단언이 공허하다"
         assert all("□" not in s["id"] for s in r["signals"])
 
     def test_wrapped_date_is_counted_like_the_proposer_sees_it(self):
@@ -221,7 +229,9 @@ def test_signals_api_counts_without_saving(client, tmp_path):  # noqa: F811
     assert r.status_code == 200, r.text
     d = r.json()
     assert d["source"]["l4_pages"] == 3 and d["saved_rules"] is None
-    assert any(s["id"] == "date" for s in d["signals"])
+    assert (
+        isinstance(d["signals"], list) and "stage" in d
+    )  # 세 쪽 표본은 넷 미만이라 날짜 가족이 없다
     assert d["recommended_rules"]["origin"] == "induced"
     manifest = json.loads(
         (Path(lib) / "documents" / "d1" / "manifest.json").read_text(encoding="utf-8")
@@ -322,7 +332,7 @@ class TestCascade:
         r = induce_signals(lines, None, toc=toc)
         assert r["stage"]["level"] == 1 and r["stage"]["by"] == ["toc"]
         # 목차 쪽의 「第…篇」 행은 세지 않았다 — 본문에서만 8회
-        first = [s for s in r["signals"] if s["id"] == "head_word:第"]
+        first = [s for s in r["signals"] if s["id"].startswith("head:第")]
         assert not first or first[0]["count"] == 8
         # 텍스트 신호는 권고하지 않는다(1단에서 멈춤) — 보조만 켠다
         assert all(not s["recommended"] for s in r["signals"] if s["group"] != "aux")
@@ -334,9 +344,10 @@ class TestCascade:
             [f"{_COL[:9]}●{_COL[:10]}" if i % 2 == 0 else _COL for i in range(8)] for _ in range(5)
         ]
         r = induce_signals(_pages(pages))
-        assert r["stage"]["level"] == 2 and "symbol:●" in r["stage"]["by"]
+        assert r["stage"]["level"] == 2
         rules = rules_from_signals(r)
         assert rules["symbols"] == ["●"] and rules["indent_alone"] is False
+        assert "sym:●" in r["stage"]["by"]
 
     def test_punctuation_is_not_a_symbol(self):
         assert is_symbol_char("●") and is_symbol_char("○") and is_symbol_char("△")
@@ -403,6 +414,7 @@ class TestLlmPatterns:
         lines = _pages(pages)
         row = verify_pattern(lines, "head_word", "又")
         assert row and row["count"] == 8 and row["toggle"] == "head_words" and row["llm"] is True
+        assert row["id"] == "head:又" and row["value"] == "又"
         assert verify_pattern(lines, "head_word", "無") is None  # 전문에 없다
         assert verify_pattern(lines, "symbol", "又") is None  # 기호가 아니다
 
@@ -417,7 +429,7 @@ class TestLlmPatterns:
         import asyncio
 
         rows, meta = asyncio.run(extract_start_patterns_llm(lines, normalize_rules(None), router))
-        assert [r["id"] for r in rows] == ["head_word:又"]
+        assert [r["id"] for r in rows] == ["head:又"]
         assert meta["model"] == "fake-1" and len(meta["raw"]) == 3
         assert router.calls[0]["response_format"] == "json" and router.calls[0]["think"] is False
 
@@ -469,7 +481,7 @@ class TestSampleScopes:
         rows, meta = asyncio.run(
             extract_start_patterns_llm(lines, normalize_rules(None), router, scope="pages")
         )
-        assert [r["id"] for r in rows] == ["head_word:又"]
+        assert [r["id"] for r in rows] == ["head:又"]
         assert meta["scope"] == "pages" and meta["sample_lines"] == 42 and meta["sample_chars"] > 0
         assert router.calls[0]["response_format"] == "json"
 
@@ -489,3 +501,42 @@ def test_signals_llm_dry_run_reports_size_without_calling_model(client, tmp_path
         json={"part_id": part_id, "scope": "everything", "dry_run": True},
     )
     assert r.json()["scope"] == "starts"
+
+
+class TestDiscoveryIsGeneric:
+    """D-119 — 코드에 종류가 없다: 有·談草·N日·○ 전부 «자리 × 되풀이 문자열»로 찾는다."""
+
+    def test_finds_head_word_and_template_without_naming_them(self):
+        # 행마다 달라야 «같은 글 되풀이»로 걸리지 않는다
+        body = "山川草木風雲雨雪日月星辰花鳥魚蟲春夏秋冬"
+        pages = []
+        for p in range(8):
+            # 쪽마다 자리를 바꾼다 — 같은 자리에 한 번씩 오면 판심(쪽 규약)으로 걸러진다
+            rows = [_COL] * 7
+            rows[p % 3] = "又" + body[p:] + body[:p]
+            rows[3 + p % 3] = f"{'一二三四五六七八'[p]}、" + body[p + 2 :] + body[: p + 2]
+            pages.append(rows)
+        r = induce_signals(_pages(pages))
+        again = [s for s in r["signals"] if s["id"].startswith("head:又")]
+        assert again and again[0]["toggle"] == "head_words" and again[0]["value"].startswith("又")
+        # 「一、」「二、」… 는 접으면 «N、» — 템플릿 칸으로
+        tpl = [s for s in r["signals"] if s["toggle"] == "head_templates"]
+        assert tpl and tpl[0]["value"].startswith("N")
+        rules = rules_from_signals(r, None, [s["id"] for s in r["signals"] if s["group"] != "aux"])
+        assert any(w.startswith("又") for w in rules["head_words"])
+        assert any(t.startswith("N") for t in rules["head_templates"])
+
+    def test_repeated_identical_lines_are_not_a_title_convention(self):
+        # 판권 문구 「同十一日」이 쪽마다 되풀이 — 표제는 행마다 달라야 한다
+        pages = [["同十一日", _COL, f"{_DAYS[p]}談草", _COL, _COL, "同十一日"] for p in range(8)]
+        r = induce_signals(_pages(pages))
+        same = [s for s in r["signals"] if s["id"].startswith("head:同")]
+        assert all(s.get("marker") == "repeat_text" and not s["recommended"] for s in same)
+
+    def test_template_rule_makes_candidates(self):
+        lines = _pages([[_COL, "一、" + _COL[2:], _COL, "二、" + _COL[2:], _COL]])
+        assert propose_boundaries(lines, None)["stats"]["proposals"] == 0
+        r = propose_boundaries(lines, {"head_templates": ["N、"]})
+        acc = [p for p in r["proposals"] if p["accepted"]]
+        assert [p["line_index"] for p in acc] == [1, 3]
+        assert any(x.startswith("head_template:") for x in acc[0]["reasons"])

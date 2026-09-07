@@ -770,11 +770,19 @@ const _SIGNAL_LABELS = {
 function _signalLabel(id) {
   if (id === "toc") return "목차";
   if (_SIGNAL_LABELS[id]) return _SIGNAL_LABELS[id];
-  if (id.startsWith("title_word:")) return `짧은 행이 「${id.slice(11)}」로 끝남`;
-  if (id.startsWith("head_word:")) return `행 첫머리 「${id.slice(10)}」`;
-  if (id.startsWith("symbol:")) return `기호 「${id.slice(7)}」`;
+  const i = id.indexOf(":");
+  if (i < 0) return id;
+  const pos = id.slice(0, i);
+  const v = id.slice(i + 1);
+  if (pos === "tail") return `행 끝 「${v}」`;
+  if (pos === "head") return `행 첫머리 「${v}」`;
+  if (pos === "sym") return `기호 「${v}」`;
+  if (pos === "after") return `기호 뒤 「${v}」`;
   return id;
 }
+
+// 규칙의 «목록 칸»들 — 행의 toggle이 이 중 하나면 value가 그 칸에 들어간다(D-119)
+const _LIST_TOGGLES = ["title_words", "head_words", "symbols", "head_templates", "tail_templates"];
 
 /**
  * 답 한 줄 (D-117) — 층계가 어디서 멈췄는지. 0단이면 LLM 단추를 내고 «자세히»를 펼친다.
@@ -822,9 +830,7 @@ function _renderVerdict() {
       for (const r of d.signals) {
         if (r.toggle.startsWith("signals.")) {
           if (rec.signals?.[r.toggle.slice(8)] !== false) signalState.checked.add(r.id);
-        } else if (r.toggle === "title_words" && (rec.title_words || []).includes(r.id.slice(11))) signalState.checked.add(r.id);
-        else if (r.toggle === "head_words" && (rec.head_words || []).includes(r.id.slice(10))) signalState.checked.add(r.id);
-        else if (r.toggle === "symbols" && (rec.symbols || []).includes(r.id.slice(7))) signalState.checked.add(r.id);
+        } else if (_LIST_TOGGLES.includes(r.toggle) && (rec[r.toggle] || []).includes(r.value)) signalState.checked.add(r.id);
         else if (r.toggle === "indent_alone" && rec.indent_alone) signalState.checked.add(r.id);
       }
       signalState.touched = false;
@@ -1048,38 +1054,32 @@ async function _loadSignals() {
     // (서버 rules_are_empty와 같은 판정). 없으면 서버가 권고에서 만든 recommended_rules를 따른다 —
     // 주 신호를 하나도 권고하지 못한 표본에서 서버는 주 신호를 기본값(켬)으로 두는데, 화면이
     // recommended 표시만 보고 다 끄면 「전부 적용」이 «적용할 구간이 없습니다»로 끝난다(Codex 지적).
-    const hasSaved = !!saved && !!(saved.origin || saved.title_words?.length || saved.head_words?.length || saved.symbols?.length || Object.keys(saved.signals || {}).length);
+    const hasSaved = !!saved && !!(saved.origin || _LIST_TOGGLES.some((t) => saved[t]?.length) || Object.keys(saved.signals || {}).length);
     const base = hasSaved ? saved : d.recommended_rules;
     if (base) {
       signalState.checked = new Set();
+      const listed = new Map(); // toggle → 목록에 있는 value들
       for (const s of d.signals) {
         if (s.toggle.startsWith("signals.")) {
           const k = s.toggle.slice(8);
           if (base.signals?.[k] !== false) signalState.checked.add(s.id);
-        } else if (s.toggle === "title_words") {
-          if ((base.title_words || []).includes(s.id.slice(11))) signalState.checked.add(s.id);
-        } else if (s.toggle === "head_words") {
-          if ((base.head_words || []).includes(s.id.slice(10))) signalState.checked.add(s.id);
-        } else if (s.toggle === "symbols") {
-          if ((base.symbols || []).includes(s.id.slice(7))) signalState.checked.add(s.id);
+        } else if (_LIST_TOGGLES.includes(s.toggle)) {
+          if (!listed.has(s.toggle)) listed.set(s.toggle, new Set());
+          listed.get(s.toggle).add(s.value);
+          if ((base[s.toggle] || []).includes(s.value)) signalState.checked.add(s.id);
         } else if (s.toggle === "indent_alone") {
           if (base.indent_alone) signalState.checked.add(s.id);
         }
       }
-      for (const w of base.symbols || []) {
-        const id = `symbol:${w}`;
-        if (!ids.has(id)) signalState.manual.push({ id, toggle: "symbols", label: `기호 「${w}」 (손으로 넣음)`, manual: true, group: "visual" });
-        signalState.checked.add(id);
-      }
-      for (const w of base.title_words || []) {
-        const id = `title_word:${w}`;
-        if (!ids.has(id)) signalState.manual.push({ id, toggle: "title_words", label: `「${w}」로 끝남 (손으로 넣음)`, manual: true });
-        signalState.checked.add(id);
-      }
-      for (const w of base.head_words || []) {
-        const id = `head_word:${w}`;
-        if (!ids.has(id)) signalState.manual.push({ id, toggle: "head_words", label: `행 첫머리 「${w}」 (손으로 넣음)`, manual: true });
-        signalState.checked.add(id);
+      // 저장에는 있는데 이번 셈에 없는 값 — 손으로 넣은 것이거나 표본이 바뀐 것. 행으로 남긴다
+      const prefix = { title_words: "tail", head_words: "head", symbols: "sym", head_templates: "head", tail_templates: "tail" };
+      for (const toggle of _LIST_TOGGLES) {
+        for (const w of base[toggle] || []) {
+          if (listed.get(toggle)?.has(w)) continue;
+          const id = `${prefix[toggle]}:${w}`;
+          if (!ids.has(id)) signalState.manual.push({ id, toggle, value: w, label: `${_signalLabel(id)} (손으로 넣음)`, manual: true, group: toggle === "symbols" ? "visual" : "primary" });
+          signalState.checked.add(id);
+        }
       }
       // 목록에 없는데 저장에서 꺼 둔 스위치(예: bbox가 없어 세지 못한 내려쓰기) — 화면에 행으로 보여
       // 켤 수 있게 한다. 안 보이면 저장할 때 조용히 되살아난다(Codex 지적).
@@ -1161,6 +1161,13 @@ function _renderSignals() {
     main.appendChild(cb);
     main.appendChild(label);
     main.appendChild(count);
+    if (r.marker) {
+      const mk = document.createElement("span");
+      mk.className = "comp-sig-aux";
+      mk.textContent = "되풀이";
+      mk.title = "행들이 대부분 같은 글이거나 앞 날짜를 되적습니다 — 판권·두주 같은 종이의 규약일 수 있어 권고하지 않습니다";
+      main.appendChild(mk);
+    }
     if (r.group === "aux") {
       const aux = document.createElement("span");
       aux.className = "comp-sig-aux";
@@ -1217,9 +1224,9 @@ function _renderSignals() {
 }
 
 /** 어휘 행을 목록에 더한다(켜진 채로). 이미 있으면 켜기만. */
-function _addWordRow(id, toggle, label) {
+function _addWordRow(id, toggle, label, value) {
   const exists = _signalRows().some((r) => r.id === id);
-  if (!exists) signalState.manual.push({ id, toggle, label, manual: true });
+  if (!exists) signalState.manual.push({ id, toggle, label, value: value ?? id.slice(id.indexOf(":") + 1), manual: true, group: toggle === "symbols" ? "visual" : "primary" });
   signalState.checked.add(id);
   signalState.touched = true;
   _renderSignals();
@@ -1236,11 +1243,11 @@ function _addManualWord() {
   }
   if (w.startsWith("^")) {
     w = w.slice(1).trim();
-    if (w) _addWordRow(`head_word:${w}`, "head_words", `행 첫머리 「${w}」 (손으로 넣음)`);
+    if (w) _addWordRow(`head:${w}`, "head_words", `행 첫머리 「${w}」 (손으로 넣음)`, w);
   } else if (w.length === 1 && !/[\p{L}\p{N}]/u.test(w)) {
-    _addWordRow(`symbol:${w}`, "symbols", `기호 「${w}」 (손으로 넣음)`);
+    _addWordRow(`sym:${w}`, "symbols", `기호 「${w}」 (손으로 넣음)`, w);
   } else {
-    _addWordRow(`title_word:${w}`, "title_words", `「${w}」로 끝남 (손으로 넣음)`);
+    _addWordRow(`tail:${w}`, "title_words", `행 끝 「${w}」 (손으로 넣음)`, w);
   }
   input.value = "";
 }
@@ -1386,17 +1393,13 @@ function _rulesFromForm() {
   // normalize_rules가 그것으로 하위 스위치를 다시 끈다.
   const saved = signalState.data?.saved_rules || {};
   const signals = { ...(saved.signals || {}) };
-  const title_words = [];
-  const head_words = [];
-  const symbols = [];
+  const lists = Object.fromEntries(_LIST_TOGGLES.map((t) => [t, []]));
   let indent_alone = false;
   let touched = signalState.touched;
   for (const row of _signalRows()) {
     const on = signalState.checked.has(row.id);
     if (row.toggle.startsWith("signals.")) signals[row.toggle.slice(8)] = on;
-    else if (on && row.toggle === "title_words") title_words.push(row.id.slice("title_word:".length));
-    else if (on && row.toggle === "head_words") head_words.push(row.id.slice("head_word:".length));
-    else if (on && row.toggle === "symbols") symbols.push(row.id.slice("symbol:".length));
+    else if (on && _LIST_TOGGLES.includes(row.toggle) && row.value && !lists[row.toggle].includes(row.value)) lists[row.toggle].push(row.value);
     else if (on && row.toggle === "indent_alone") indent_alone = true;
     if (row.manual || on !== !!row.recommended) touched = true;
   }
@@ -1406,9 +1409,7 @@ function _rulesFromForm() {
   return {
     ...rest,
     signals,
-    title_words,
-    head_words,
-    symbols,
+    ...lists,
     indent_alone,
     furniture,
     suppress,
@@ -1630,6 +1631,8 @@ function _reasonChip(r) {
   else if (r.startsWith("volume:")) { label = `卷 ${r.slice(7)}`; cls = "pos"; }
   else if (r.startsWith("title_word:")) { label = `어휘 ${r.slice(11)}`; cls = "pos"; }
   else if (r.startsWith("head_word:")) { label = `행머리 ${r.slice(10)}`; cls = "pos"; }
+  else if (r.startsWith("head_template:")) { label = `행머리 꼴 ${r.slice(14)}`; cls = "pos"; }
+  else if (r.startsWith("tail_template:")) { label = `행끝 꼴 ${r.slice(14)}`; cls = "pos"; }
   else if (_REASON_LABELS[r]) [label, cls] = _REASON_LABELS[r];
   const s = document.createElement("span");
   s.className = `prop-reason ${cls}`;
@@ -1886,7 +1889,7 @@ function _renderRuleCandidates(d) {
         const has = cur.split(/\n/).some((x) => x.trim() === text);
         if (!has) el.value = cur ? cur + "\n" + text : text;
       } else {
-        _addWordRow(`title_word:${text}`, "title_words", `「${text}」로 끝남 (LLM 후보)`);
+        _addWordRow(`tail:${text}`, "title_words", `행 끝 「${text}」 (LLM 후보)`, text);
       }
       b.disabled = true;
     });

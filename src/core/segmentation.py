@@ -39,7 +39,9 @@ from core.toc import kanji_norm, lenient_json, reference_excerpt
 _GANZHI = "[甲乙丙丁戊己庚辛壬癸][子丑寅卯辰巳午未申酉戌亥]"
 _NUM = "[一二三四五六七八九十廿卄卅]+"
 _MONTH = rf"(?:是月|閏?(?:正|臘|{_NUM})月)"
-_DAY = rf"(?:是日|翌日|同日|朔日?|晦日?|初{_NUM}日|{_NUM}日)"
+# 「同十一日」 — 같은 달의 11일. 同은 «같은»이라는 말이지 책의 규약이 아니다(천진담초 두주
+# 실측 2026-09-07).
+_DAY = rf"(?:是日|翌日|同日|朔日?|晦日?|同{_NUM}日|初{_NUM}日|{_NUM}日)"
 # 「○七日」처럼 날짜 앞에 오는 조목 표지 — 澹齋日錄류는 개행 없이 이 표지로 날을 나눈다
 # (D-090 2단계).
 _MARK = "[○◯〇●]"
@@ -145,6 +147,37 @@ def parse_date_head(text: str) -> DateHead:
     return head
 
 
+# ── 접기 (언어 지식 — 발견기와 제안기가 같은 눈으로 본다, D-119) ──────────
+
+_MAX_NGRAM = 4  # 발견기가 보는 꼴의 최대 길이(접은 글자 기준). 제안기의 템플릿 대조도 이 길이로
+
+_STEMS = "甲乙丙丁戊己庚辛壬癸"
+_BRANCHES = "子丑寅卯辰巳午未申酉戌亥"
+_NUMERALS = "一二三四五六七八九十廿卄卅百千"
+
+
+def fold_char(ch: str) -> str:
+    """접기 — 수사·干支를 부류 글자로. 언어 지식(문헌 무관)."""
+    if ch in _NUMERALS:
+        return "N"
+    if ch in _STEMS:
+        return "G"
+    if ch in _BRANCHES:
+        return "Z"
+    return ch
+
+
+def fold_text(text: str) -> str:
+    """문자열을 접고, 같은 부류 글자의 연속을 하나로(«NNN日» → «N日»)."""
+    out: list[str] = []
+    for ch in text:
+        f = fold_char(ch)
+        if f in "NGZ" and out and out[-1] == f:
+            continue
+        out.append(f)
+    return "".join(out)
+
+
 # ── 규칙 (문헌 설정) ─────────────────────────────────────────────────────
 
 DEFAULT_RULES: dict = {
@@ -174,6 +207,10 @@ DEFAULT_RULES: dict = {
     "symbols": [],
     # indent_alone: 내려쓰기만으로 경계를 세운다(bbox가 있는 쪽). 시집처럼 제목만 내려쓴 판식.
     "indent_alone": False,
+    # ── D-119: 발견기가 찾은 «꼴» — 접은 글자(N=수사·G=天干·Z=地支)가 든 문자열.
+    # head_templates: 행 첫머리 꼴(예: 「N、」 條 목록). tail_templates: 행 끝 꼴(예: 「第N」).
+    "head_templates": [],
+    "tail_templates": [],
 }
 
 _SIGNAL_KEYS = ("date", "mark", "volume", "short_line", "after_short", "indent")
@@ -213,6 +250,12 @@ def normalize_rules(rules: Optional[dict]) -> dict:
     out["origin"] = str(out.get("origin") or "")
     out["symbols"] = [str(c)[0] for c in (out.get("symbols") or []) if str(c).strip()]
     out["indent_alone"] = bool(out.get("indent_alone"))
+    out["head_templates"] = [
+        str(t).strip() for t in (out.get("head_templates") or []) if str(t).strip()
+    ]
+    out["tail_templates"] = [
+        str(t).strip() for t in (out.get("tail_templates") or []) if str(t).strip()
+    ]
     return out
 
 
@@ -644,6 +687,22 @@ def propose_boundaries(
                 hword = next((w for w in rules["head_words"] if text.startswith(w)), "")
                 if hword:
                     word, wpos, word_reason = hword, 0, f"head_word:{hword}"
+            if (
+                not word
+                and char_offset == 0
+                and (rules["head_templates"] or rules["tail_templates"])
+            ):
+                # 꼴(템플릿, D-119) — 접은 글자로 대조한다. 「一、」 條 목록의 «N、»,
+                # 「第三号」의 «第N»
+                fh = fold_text(text[: _MAX_NGRAM * 3])
+                ft = fold_text(text[-_MAX_NGRAM * 3 :])
+                tpl = next((t for t in rules["head_templates"] if fh.startswith(t)), "")
+                if tpl:
+                    word, wpos, word_reason = tpl, 0, f"head_template:{tpl}"
+                else:
+                    tpl = next((t for t in rules["tail_templates"] if ft.endswith(t)), "")
+                    if tpl and len(text) <= limit:
+                        word, wpos, word_reason = tpl, 0, f"tail_template:{tpl}"
             # 형식·목차 신호는 행 첫머리에만 있다 — 행 중간 후보는 ○ 표지와 날짜가 신호다
             sig = (
                 [s for s in layout.get((ln.page, ln.line_index), []) if signal_on(rules, s)]
@@ -692,7 +751,11 @@ def propose_boundaries(
                 # 날짜가 다음 행에서 끝났다 — 점수는 그대로, 사람이 알아볼 수 있게 표시만 남긴다
                 reasons.append("date_wrap")
             if word:
-                conf += 0.3
+                # 꼴(템플릿 — 「N、」 條 목록)은 접은 글자로 자리에 닻을 내린 구조라
+                # 혼자서도 문턱을 넘는다.
+                # 어휘는 +0.3 — 「有」처럼 흔한 글자가 본문 행 첫머리에 올 때 짧은 행 신호
+                # 없이는 안 넘게.
+                conf += 0.5 if "template" in word_reason else 0.3
                 reasons.append(word_reason)
             if vol is not None:
                 if vol in seen_volumes:
@@ -731,6 +794,7 @@ def propose_boundaries(
             # (「…并闕日記故談草無一見存者」). 짧은 행 신호가 있으면 표제일 수 있으니 뺀다.
             if (
                 word
+                and "template" not in word_reason
                 and not head.present
                 and toc is None
                 and "short_line" not in sig
@@ -809,7 +873,11 @@ def propose_boundaries(
             tail_start = len(head.matched)
             place = text[tail_start:wpos] if word and wpos >= tail_start else text[tail_start:limit]
             place = place.strip()
-            title = text[: (wpos + len(word)) if word else min(len(text), limit)]
+            title = text[
+                : (wpos + len(word))
+                if word and "template" not in word_reason
+                else min(len(text), limit)
+            ]
             kind = word
             if toc is not None:
                 title = toc.get("title") or title

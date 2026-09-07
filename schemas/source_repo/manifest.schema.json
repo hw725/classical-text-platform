@@ -110,7 +110,9 @@
             "toc_llm": { "type": "boolean", "description": "목차가 잡혔을 때 항목 구조화에 LLM을 쓸지. 편성 탭의 「전부 적용해 새로 세우기」가 따른다 — 사이드바 «자동 트리»는 언제나 LLM 없음 (D-117 ③-B)." },
             "origin": { "type": "string", "enum": ["", "induced", "manual"], "description": "규칙이 어디서 왔나 — induced(프로그램이 전문에서 찾음)·manual(사람이 손봄)·빈 값(아직 없음)." },
             "symbols": { "type": "array", "items": { "type": "string", "minLength": 1, "maxLength": 1 }, "description": "되풀이되는 기호(○●△ …). 기호 자리마다 후보가 선다 (D-117 시각 신호)." },
-            "indent_alone": { "type": "boolean", "description": "내려쓰기만으로 경계를 세운다 (D-117 시각 신호). bbox가 있는 쪽에서만 효과가 있다." }
+            "indent_alone": { "type": "boolean", "description": "내려쓰기만으로 경계를 세운다 (D-117 시각 신호). bbox가 있는 쪽에서만 효과가 있다." },
+            "head_templates": { "type": "array", "items": { "type": "string" }, "description": "행 첫머리 꼴 — 접은 글자(N=수사·G=天干·Z=地支)가 든 문자열, 예 「N、」 (D-119 발견기)." },
+            "tail_templates": { "type": "array", "items": { "type": "string" }, "description": "행 끝 꼴, 예 「第N」 (D-119 발견기)." }
           }
         }
       ],
