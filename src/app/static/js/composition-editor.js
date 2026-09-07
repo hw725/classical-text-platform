@@ -989,9 +989,12 @@ async function _askLlmPatterns() {
     signalState.llmAsked = true;
     const rows = d.signals || [];
     for (const r of rows) {
-      const exists = _signalRows().some((x) => x.id === r.id);
-      if (!exists) signalState.manual.push({ ...r, manual: true });
-      if (r.recommended) signalState.checked.add(r.id);
+      const current = _signalRows();
+      const existing = current.find((x) => x.toggle === r.toggle && x.value === r.value);
+      // 발견된 접은 꼴과 LLM의 원문 어휘가 같은 ID여도 서로 덮어쓰지 않는다.
+      const id = existing?.id || (current.some((x) => x.id === r.id) ? `manual:${r.toggle}:${r.value}` : r.id);
+      if (!existing) signalState.manual.push({ ...r, id, manual: true });
+      if (r.recommended) signalState.checked.add(id);
     }
     signalState.touched = signalState.touched || rows.length > 0;
     _renderSignals();
@@ -1076,8 +1079,11 @@ async function _loadSignals() {
       for (const toggle of _LIST_TOGGLES) {
         for (const w of base[toggle] || []) {
           if (listed.get(toggle)?.has(w)) continue;
-          const id = `${prefix[toggle]}:${w}`;
-          if (!ids.has(id)) signalState.manual.push({ id, toggle, value: w, label: `${_signalLabel(id)} (손으로 넣음)`, manual: true, group: toggle === "symbols" ? "visual" : "primary" });
+          // 같은 글자라도 어휘와 접은 꼴은 서로 다른 규칙이므로 체크 ID도 분리한다.
+          const id = `manual:${toggle}:${w}`;
+          signalState.manual.push({ id, toggle, value: w, label: `${_signalLabel(`${prefix[toggle]}:${w}`)} (손으로 넣음)`, manual: true, group: toggle === "symbols" ? "visual" : "primary" });
+          if (!listed.has(toggle)) listed.set(toggle, new Set());
+          listed.get(toggle).add(w);
           signalState.checked.add(id);
         }
       }
@@ -1223,10 +1229,19 @@ function _renderSignals() {
   }
 }
 
-/** 어휘 행을 목록에 더한다(켜진 채로). 이미 있으면 켜기만. */
+/**
+ * 입력: 후보 ID·규칙 칸·표시명·값. 출력: 없음(행과 체크 상태 갱신).
+ * 목적: 같은 칸·값은 재사용하되 어휘와 접은 꼴의 ID 충돌로 저장값이 사라지지 않게 한다.
+ */
 function _addWordRow(id, toggle, label, value) {
-  const exists = _signalRows().some((r) => r.id === id);
-  if (!exists) signalState.manual.push({ id, toggle, label, value: value ?? id.slice(id.indexOf(":") + 1), manual: true, group: toggle === "symbols" ? "visual" : "primary" });
+  value = value ?? id.slice(id.indexOf(":") + 1);
+  const rows = _signalRows();
+  const existing = rows.find((r) => r.toggle === toggle && r.value === value);
+  if (existing) id = existing.id;
+  else {
+    if (rows.some((r) => r.id === id)) id = `manual:${toggle}:${value}`;
+    signalState.manual.push({ id, toggle, label, value, manual: true, group: toggle === "symbols" ? "visual" : "primary" });
+  }
   signalState.checked.add(id);
   signalState.touched = true;
   _renderSignals();

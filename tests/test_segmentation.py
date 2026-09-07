@@ -19,6 +19,7 @@ from src.core.segmentation import (
     DEFAULT_RULES,
     Line,
     cjk_number,
+    fold_text,
     normalize_rules,
     parse_date_head,
     propose_boundaries,
@@ -42,6 +43,12 @@ BODY = "本文本文本文本文本文本文本文本文本文本文本"  # 21�
 
 
 class TestDateGrammar:
+    def test_same_month_numbered_day_keeps_day_value(self):
+        """입력: 同十一日. 출력: 일자 11. 목적: 다음 날짜의 사슬 계산을 보존한다."""
+        head = parse_date_head("同十一日記事")
+        assert head.matched == "同十一日"
+        assert head.day == 11 and not head.is_day_rel
+
     @pytest.mark.parametrize(
         "text,expected",
         [
@@ -82,6 +89,52 @@ def _doc(titles, rules=None, body_lines=3, body=BODY):
             lines.append(Line(1, li, body))
             li += 1
     return propose_boundaries(lines, rules)
+
+
+@pytest.mark.parametrize(
+    "text,key,template",
+    [
+        ("一" * 13 + "、項目", "head_templates", "N、"),
+        ("題第" + "一" * 13, "tail_templates", "第N"),
+        ("12、項目", "head_templates", "12、"),
+    ],
+)
+def test_templates_match_after_folding_full_text(text, key, template):
+    """입력: 긴 수사·숫자 표제. 출력: 후보 1개. 목적: 발견기와 같은 꼴로 대조한다."""
+    result = _doc([text], {key: [template], "signals": {"date": False, "mark": False}})
+    assert len(result["proposals"]) == 1
+    proposal = result["proposals"][0]
+    assert proposal["accepted"]
+    assert f"{key[:-1]}:{template}" in proposal["reasons"]
+
+
+def test_tail_template_keeps_raw_title_length_limit():
+    """입력: 상한 넘는 긴 행. 출력: 빈 후보. 목적: 본문 행 끝을 표제로 삼지 않는다."""
+    result = _doc(["文" * 23 + "第一"], {"tail_templates": ["第N"]})
+    assert result["proposals"] == []
+
+
+def test_fold_text_preserves_raw_digits_and_unifies_numeral_spellings():
+    """입력: 수사 이형과 숫자. 출력: 한자 수사만 통합. 목적: D-119 접기 범위를 고정한다."""
+    assert fold_text("二十八日") == fold_text("廿八日") == "N日"
+    assert fold_text("12、") == "12、"
+
+
+def test_mark_off_keeps_head_date_after_previous_line_mark_as_plain_date():
+    """입력: 앞 행 끝 ○와 다음 행 첫머리 날짜. 출력: mark를 끄면 ○ 보너스만 잃고 행 첫머리
+    날짜로 남는다. 목적: 행 첫머리에 온 날짜는 date 스위치의 것이다 — Codex는 후보가 사라져야
+    한다고 했으나 거절(2026-09-08)."""
+    lines = [Line(1, 0, BODY + "○"), Line(1, 1, "十一日記事"), Line(1, 2, BODY)]
+    enabled = propose_boundaries(lines)
+    assert len(enabled["proposals"]) == 1
+    assert "mark" in enabled["proposals"][0]["reasons"]
+    disabled = propose_boundaries(lines, {"signals": {"mark": False}})
+    assert len(disabled["proposals"]) == 1
+    assert "mark" not in disabled["proposals"][0]["reasons"]
+    assert "date" in disabled["proposals"][0]["reasons"]
+    assert disabled["proposals"][0]["confidence"] < enabled["proposals"][0]["confidence"]
+    both_off = propose_boundaries(lines, {"signals": {"mark": False, "date": False}})
+    assert both_off["proposals"] == []
 
 
 class TestChain:

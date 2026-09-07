@@ -275,7 +275,9 @@ def _discover(texts: list[str]) -> dict[tuple[str, str], list[int]]:
         for i, ch in enumerate(t):
             if is_symbol_char(ch):
                 fam[("sym", ch)].add(k)
-                rest = fold_text(t[i + 1 : i + 1 + _MAX_NGRAM * 2])
+                # 접은 뒤에 자른다 — 원문을 먼저 자르면 「一千二百三十四、」처럼 긴 수사가
+                # «N» 하나로 접혀 뒤의 「、」를 못 본다(Codex 지적 2026-09-08)
+                rest = fold_text(t[i + 1 :])[:_MAX_NGRAM]
                 for n in range(1, min(_MAX_NGRAM, len(rest)) + 1):
                     a = rest[:n]
                     if not _has_unknown(a):
@@ -294,9 +296,11 @@ def _lift(texts_folded: list[str], key: tuple[str, str], count: int) -> float:
     if pos in ("sym", "after"):
         return _MIN_LIFT
     anywhere = sum(t.count(st) for t in texts_folded)
+    if anywhere == 0:
+        return 0.0  # 전문에 없는 꼴(호출 쪽이 다른 본문을 넘긴 경우) — 편중이 아니라 자료 불일치
     total_chars = sum(len(t) for t in texts_folded)
     expected = anywhere * len(texts_folded) / max(1, total_chars)
-    return count / max(expected, 1e-9)
+    return count / expected
 
 
 def _prune_nested(fams: dict[tuple[str, str], list[int]]) -> dict[tuple[str, str], list[int]]:
@@ -319,7 +323,10 @@ def _prune_nested(fams: dict[tuple[str, str], list[int]]) -> dict[tuple[str, str
     return keep
 
 
-_DATE_FOLD_CHARS = set("N月日初是同翌朔晦閏正臘")
+def _date_only(text: str) -> bool:
+    """행 전체가 날짜 문법인가 — 「同十一日」「三月初五日」. 두주·판권의 날짜 한 줄을 가린다."""
+    h = parse_date_head(text)
+    return h.present and h.matched.strip() == text.strip()
 
 
 def _repeat_fraction(texts: list[str], positions: list[int]) -> tuple[int, float]:
@@ -346,15 +353,23 @@ def _classify(pos: str, s: str, texts: list[str], positions: list[int]) -> tuple
     - 접힌 글자(N·G·Z)가 든 꼴은 템플릿(head_templates·tail_templates), 아니면
     어휘(head_words·title_words)
     """
-    sample = [texts[k] for k in positions[:40]]
+    # 가족 전체를 본다 — 앞 40행만 보면 책 앞쪽이 날짜이고 뒤쪽이 어휘인 가족을 날짜로 잘못
+    # 판정한다(Codex 지적 2026-09-08). parse_date_head는 정규식 한 번이라 수백 행도 값싸다.
+    sample = [texts[k] for k in positions]
     if pos == "sym":
         return "symbols", s, f"기호 「{s}」"
     if pos == "after":
         sym, rest = s[0], s[1:]
         dated = 0
-        for k in positions[:40]:
+        for k in positions:
             nxt = texts[k + 1] if k + 1 < len(texts) else ""
-            segs = [seg.strip() for seg in texts[k].split(sym)[1:]]
+            # 한 행에 기호가 여럿이면 «이 꼴이 붙은 자리»만 본다 — 「●又本文●初一日」에서 「●又」
+            # 가족이 뒤쪽 「●初一日」 때문에 날짜로 판정되면 안 된다
+            segs = [
+                seg.strip()
+                for seg in texts[k].split(sym)[1:]
+                if fold_text(seg.strip()).startswith(rest)
+            ]
             if any(
                 parse_date_head(seg).present or parse_wrapped_date_head(sym + seg, nxt).present
                 for seg in segs
@@ -370,8 +385,10 @@ def _classify(pos: str, s: str, texts: list[str], positions: list[int]) -> tuple
         if any(c in "NGZ" for c in s):
             return "head_templates", s, f"행 첫머리 꼴 「{s}」"
         return "head_words", s, f"행 첫머리 「{s}」"
-    # tail
-    if all(c in _DATE_FOLD_CHARS for c in s):
+    # tail — 행 전체가 날짜인 행이 대부분이면(두주·판권의 날짜 한 줄) 표제 규약이 아니다.
+    # 날짜는 행 첫머리 가족이 이미 센다. 글자 목록으로 가르지 않는다 — 「同」으로 끝나는 본문 행
+    # (「和而不同」)이 날짜 글자라는 이유로 버려졌다(Codex 지적 2026-09-08).
+    if sum(1 for t in sample if _date_only(t)) / max(1, len(sample)) >= 0.8:
         return "drop", "", f"행 끝 날짜 꼴 ({s}) — 표제 규약이 아님"
     vol = sum(1 for t in sample if volume_head(t, 40) is not None)
     if vol / max(1, len(sample)) >= 0.8:
@@ -409,14 +426,21 @@ def induce_signals(
     lines = [ln for ln in lines if ln.text.strip() and ln.page not in toc_pages]
     n = len(lines)
     if n < 4:
+        # 본문이 거의 없어도 목차가 결정적이면 1단이다 — 조기 반환이 층계를 건너뛰면 안 된다
+        decisive = bool(toc and toc.get("decisive"))
         return {
             "lines": n,
             "median_len": 0,
             "stage": {
-                "level": 0,
-                "name": STAGE_NAMES[0],
-                "summary": "행이 너무 적습니다",
-                "by": [],
+                "level": 1 if decisive else 0,
+                "name": STAGE_NAMES[1 if decisive else 0],
+                "summary": (
+                    f"목차 {toc['entries']}항목 중 {toc['matched']} 대조 — "
+                    "목차가 이 책의 규약입니다"
+                    if decisive
+                    else "행이 너무 적습니다"
+                ),
+                "by": ["toc"] if decisive else [],
             },
             "signals": [],
             "dropped": [],
@@ -585,7 +609,8 @@ def induce_signals(
         if len(pos) >= 3 and not parse_date_head(t).present and _page_furniture(lines, pos)
     )
 
-    rows.sort(key=lambda r: (-r["score"], -r["count"]))
+    rows.sort(key=lambda r: (-r["score"], -r["count"], r["id"]))
+    dropped.sort(key=lambda d: (d["why"], d["id"]))
     # 같은 자리에서 행이 80% 이상 겹치는 두 꼴(「有」와 「有詩」)은 점수 높은 쪽만 남긴다
     pos_of = {
         r["id"]: set(fams.get(tuple(r["id"].split(":", 1)), [])) for r in rows if ":" in r["id"]
@@ -707,9 +732,12 @@ def rules_from_signals(
     }
     indent_alone = False
     listed: set[str] = set()
+    listed_values: dict[str, set[str]] = {k: set() for k in lists}
     for r in induced.get("signals", []):
         if r["toggle"].startswith("signals."):
             listed.add(r["toggle"].split(".", 1)[1])
+        elif r["toggle"] in lists and r.get("value"):
+            listed_values[r["toggle"]].add(r["value"])
         if r["id"] not in chosen:
             continue
         if r["toggle"] in lists:
@@ -735,7 +763,11 @@ def rules_from_signals(
         for k in _PRIMARY:
             signals[k] = True
     rules["signals"] = signals
-    rules.update(lists)
+    for k, vals in lists.items():
+        # 이번 셈에 안 나온 저장값(사람이 넣었거나 표본이 달라진 것)은 그대로 둔다. 목록에 나왔는데
+        # 고르지 않은 값만 뺀다 — 재도출이 손으로 넣은 어휘를 지우면 안 된다(Codex 지적 2026-09-08)
+        kept = [v for v in rules.get(k) or [] if v not in listed_values[k]]
+        rules[k] = list(dict.fromkeys(kept + vals))
     rules["indent_alone"] = indent_alone
     rules["furniture"] = list(induced.get("furniture", []))
     rules["origin"] = "induced"
@@ -761,6 +793,8 @@ def rules_are_empty(rules: Optional[dict]) -> bool:
         or rules.get("title_words")
         or rules.get("head_words")
         or rules.get("symbols")
+        or rules.get("head_templates")
+        or rules.get("tail_templates")
         or rules.get("indent_alone")
     )
 
@@ -859,8 +893,8 @@ def verify_pattern(lines: list[Line], kind: str, value: str) -> Optional[dict]:
     """
     lines = [ln for ln in lines if ln.text.strip()]
     texts = [ln.text.strip() for ln in lines]
-    if not value:
-        return None
+    if not value or _has_unknown(value):
+        return None  # 「□」는 OCR이 못 읽은 자리다 — 표지가 아니라 잡음(발견기와 같은 기준)
     if len(value) == 1 and is_symbol_char(value):
         kind = (
             "symbol"  # 모델이 «행머리 ○»라 해도 ○는 기호다 — 2단 가족으로 합친다(2026-09-07 실측)
@@ -880,7 +914,7 @@ def verify_pattern(lines: list[Line], kind: str, value: str) -> Optional[dict]:
         return None
     reg, med = _gap_regularity(pos)
     density = len(pos) / max(1, len(texts)) * 100
-    return {
+    row = {
         "id": sid,
         "label": label,
         "toggle": toggle,
@@ -893,10 +927,14 @@ def verify_pattern(lines: list[Line], kind: str, value: str) -> Optional[dict]:
         "chain": None,
         "adjacent": round(_adjacent_fraction(pos), 2),
         "score": round(math.log(len(pos)) * reg, 2),
-        "recommended": reg >= _MIN_REGULARITY and density <= _MAX_DENSITY,
+        "recommended": False,
         "examples": _examples(lines, pos),
         "llm": True,
     }
+    # 발견기와 같은 문턱(_solid) — 연속 비율까지 본다. 「又山」「又川」처럼 줄지어 오는 행은
+    # 덩어리(협주·시 본문)라 표지가 아니다(Codex 지적 2026-09-08: 전에는 간격·밀도만 봤다)
+    row["recommended"] = _solid(row)
+    return row
 
 
 async def extract_start_patterns_llm(

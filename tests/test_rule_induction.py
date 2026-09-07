@@ -15,6 +15,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
+from src.core import rule_induction as induction
 from src.core.rule_induction import (
     extract_start_patterns_llm,
     induce_signals,
@@ -540,3 +543,113 @@ class TestDiscoveryIsGeneric:
         acc = [p for p in r["proposals"] if p["accepted"]]
         assert [p["line_index"] for p in acc] == [1, 3]
         assert any(x.startswith("head_template:") for x in acc[0]["reasons"])
+
+
+class TestDiscoveryRegressions:
+    """입력 경계와 발견→판정 계약을 고정해 문법별 예외의 재발을 막는다."""
+
+    def test_short_and_symbol_only_lines(self):
+        """입력: 짧은 행. 출력: 실제 길이의 꼴만. 목적: 빈 꼴·중복 계수 방지."""
+        fams = induction._discover(["", "●", "本●", "●又●又"] * 4)
+        assert fams[("sym", "●")] == [k for k in range(16) if k % 4 != 0]
+        assert fams[("after", "●又")] == [3, 7, 11, 15]
+        assert all(form for _, form in fams)
+        assert ("head", "本●") in fams
+        assert ("after", "●") not in fams
+
+    def test_after_uses_folded_length_not_raw_length(self):
+        """입력: 긴 수사 뒤 표지. 출력: 접은 네 글자. 목적: 원문 절단 누락 방지."""
+        fams = induction._discover(["●" + "一" * 12 + "、本文"] * 4)
+        assert fams[("after", "●N、本文")] == [0, 1, 2, 3]
+
+    def test_nested_equal_count_keeps_longer(self):
+        """입력: 같은 횟수의 포함 꼴. 출력: 긴 꼴. 목적: 정상 가지치기를 고정한다."""
+        fams = {("head", "又"): [0, 3, 6, 9], ("head", "又詩"): [0, 3, 6, 9]}
+        assert induction._prune_nested(fams) == {("head", "又詩"): [0, 3, 6, 9]}
+
+    def test_lift_without_occurrences_is_not_evidence(self):
+        """입력: 전문에 없는 꼴. 출력: 편중 0. 목적: 기대값 0의 무한 점수 방지."""
+        assert induction._lift(["本文"], ("head", "無"), 4) == 0
+
+    def test_tail_drop_requires_actual_date_only_lines(self):
+        """입력: 날짜 글자를 포함한 일반 어휘. 출력: 어휘. 목적: 글자 목록 편향 제거."""
+        texts = ["萬物皆同", "天下大同", "和而不同", "殊途而同"]
+        assert induction._classify("tail", "同", texts, list(range(4)))[0] == "title_words"
+        mixed = ["十一日", "十二日", "十三日", "山中度日"]
+        assert induction._classify("tail", "N日", mixed, list(range(4)))[0] != "drop"
+        dates = ["十一日", "十二日", "十三日", "十四日"]
+        assert induction._classify("tail", "N日", dates, list(range(4)))[0] == "drop"
+
+    def test_after_classifies_only_the_matching_occurrence(self):
+        """입력: 한 행의 서로 다른 기호 뒤 꼴. 출력: 각 꼴의 문법. 목적: 날짜 오염 방지."""
+        texts = ["●又本文●初一日晴"] * 4
+        assert induction._classify("after", "●又", texts, list(range(4)))[0] == "symbols"
+        assert induction._classify("after", "●初N", texts, list(range(4)))[0] == "signals.mark"
+
+    def test_classification_does_not_sample_only_the_first_40(self):
+        """입력: 앞 40행만 날짜. 출력: 혼합 어휘. 목적: 문헌 뒤쪽 표본 누락 방지."""
+        texts = ["同十一日"] * 40 + ["同遊山水"] * 20
+        assert induction._classify("head", "同", texts, list(range(60)))[0] == "head_words"
+
+    def test_month_only_and_relative_dates_are_not_repeated_dates(self):
+        """입력: 월만 있는 날짜와 상대 날짜. 출력: 날짜 0. 목적: 같은 달의 시제(「三月春」)를
+        판권의 «같은 날짜 되풀이»로 오판하지 않는다 — Codex는 월만으로도 세자고 했으나 거절."""
+        texts = ["三月春", "三月雨", "三月晴", "三月風", "翌日", "同日"]
+        assert induction._repeat_fraction(texts, list(range(6))) == (0, 1.0)
+
+    def test_grammar_families_are_shown_but_not_recommended_when_dense(self):
+        """입력: 매 행이 날짜. 출력: 날짜 가족은 보이되 권고 아님. 목적: 문법 가족도 밀도 문턱
+        (_solid)을 따른다. 판심 필터는 문법 가족에 적용하지 않는다 — «쪽마다 한 번 같은 자리»는
+        판심의 꼴이지만 날짜는 행마다 다른 글이라 한 쪽 한 기사 일기를 판심으로 버리면 안 된다
+        (Codex 제안 거절, 2026-09-08)."""
+        dense = induce_signals(_pages([["一日"] * 8]))
+        date = [s for s in dense["signals"] if s["id"] == "date"]
+        assert date and not date[0]["recommended"] and date[0]["per100"] == 100.0
+        pages = [[_DAYS[p] + "記", _COL, _COL, _COL] for p in range(8)]
+        fixed = induce_signals(_pages(pages))
+        assert any(s["id"] == "date" and s["recommended"] for s in fixed["signals"])
+        # 같은 행들의 어휘 꼴(「初N日記」)은 판심으로 떨어져도 된다 — 날짜 가족만 살면 된다
+        assert not any(d["id"] == "date" for d in fixed["dropped"])
+
+    def test_overlap_deduplication_has_a_stable_tie_break(self, monkeypatch):
+        """입력: 동일 점수·중첩 가족의 역순. 출력: 같은 선택. 목적: 사전 삽입 순서 의존 제거."""
+        texts = ["●AX●BY", _COL, _COL] * 4
+        fams = {("after", "●AX"): [0, 3, 6, 9], ("after", "●BY"): [0, 3, 6, 9]}
+        lines = _pages([texts])
+        monkeypatch.setattr(induction, "_discover", lambda _: fams)
+        forward = induction.induce_signals(lines)
+        monkeypatch.setattr(induction, "_discover", lambda _: dict(reversed(list(fams.items()))))
+        reverse = induction.induce_signals(lines)
+        assert forward == reverse
+
+    @pytest.mark.parametrize("toggle", ["head_templates", "tail_templates"])
+    def test_templates_count_as_saved_rules(self, toggle):
+        """입력: 템플릿만 저장. 출력: 비어 있지 않음. 목적: 자동 도출의 덮어쓰기 방지."""
+        assert not rules_are_empty({toggle: ["N、"]})
+
+    def test_rules_preserve_unlisted_values_but_remove_unchecked_ones(self):
+        """입력: 저장값·미선택·중복 선택. 출력: 보존된 고유 값. 목적: 재도출 데이터 유실 방지."""
+        rows = [
+            {"id": "head:又", "toggle": "head_words", "value": "又", "group": "primary"},
+            {"id": "head:答", "toggle": "head_words", "value": "答", "group": "primary"},
+            {"id": "other", "toggle": "head_words", "value": "答", "group": "primary"},
+        ]
+        base = {"head_words": ["存", "存", "又"], "tail_templates": ["N篇"]}
+        rules = rules_from_signals({"signals": rows}, base, ["head:答", "other"])
+        assert rules["head_words"] == ["存", "答"]
+        assert rules["tail_templates"] == ["N篇"]
+        assert base["head_words"] == ["存", "存", "又"]
+
+    def test_verified_pattern_obeys_adjacency_and_unknown_filter(self):
+        """입력: 덩어리 표지·OCR 잡음. 출력: 비권고·제외. 목적: LLM 문턱 우회 방지."""
+        lines = _pages([["又山", "又川", "又林", "又海"] + [_COL] * 8])
+        row = verify_pattern(lines, "head_word", "又")
+        assert row and row["adjacent"] == 0.75 and not row["recommended"]
+        unknown = _pages([["□山", _COL] * 4])
+        assert verify_pattern(unknown, "head_word", "□") is None
+
+    def test_decisive_toc_survives_a_small_body(self):
+        """입력: 충분히 대조된 목차·짧은 본문. 출력: 1단. 목적: 빈 본문 조기 반환 우회 방지."""
+        toc = {"pages": [1], "entries": 3, "matched": 3, "decisive": True}
+        result = induce_signals(_pages([["目錄"], ["本文"]]), toc=toc)
+        assert result["stage"]["level"] == 1 and result["stage"]["by"] == ["toc"]

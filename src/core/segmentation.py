@@ -667,8 +667,9 @@ def propose_boundaries(
                 head.mark = True
                 head.wrapped = True
             # 신호 스위치(D-116) — 도출기(rule_induction)가 세는 가족과 같은 계약이다:
-            #   mark = 행 중간의 ○+날짜, 행 첫머리 ○+날짜, 앞 열 끝 ○ 뒤의 날짜
-            #          → 끄면 그 후보가 사라진다
+            #   mark = 행 중간의 ○+날짜, 행 첫머리 ○+날짜 → 끄면 그 후보가 사라진다.
+            #          앞 열 끝 ○ 뒤의 날짜는 mark를 끄면 ○ 보너스만 잃고 «행 첫머리 날짜»로 남는다
+            #          (date가 켜져 있을 때) — 행 첫머리에 온 날짜인 것은 그대로이기 때문이다
             #   date = ○ 없이 행 첫머리에 온 날짜 → 끄면 그 후보가 사라진다
             # 전에는 mark를 꺼도 행 중간 ○+날짜가 «날짜» 후보로 살아남았다(Codex 지적 2026-09-07).
             if sym and head.present:
@@ -694,8 +695,9 @@ def propose_boundaries(
             ):
                 # 꼴(템플릿, D-119) — 접은 글자로 대조한다. 「一、」 條 목록의 «N、»,
                 # 「第三号」의 «第N»
-                fh = fold_text(text[: _MAX_NGRAM * 3])
-                ft = fold_text(text[-_MAX_NGRAM * 3 :])
+                # 행 전체를 접는다 — 앞 12자만 접으면 긴 수사(「一千二百三十四、」)가 «N»으로
+                # 접혀 뒤의 「、」를 놓친다. 발견기(_discover)와 같은 눈이어야 한다
+                fh = ft = fold_text(text)
                 tpl = next((t for t in rules["head_templates"] if fh.startswith(t)), "")
                 if tpl:
                     word, wpos, word_reason = tpl, 0, f"head_template:{tpl}"
