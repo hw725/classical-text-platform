@@ -28,30 +28,12 @@
 
 const compState = {
   active: false, // 편성 모드 활성화 여부
-  sourceBlocks: [], // 자동 편성이 쓰는 교정된 LayoutBlock 목록 (화면에는 그리지 않는다)
   currentBoundaries: [], // 지금 저장돼 있는 경계 — 편성 탭의 기본 화면
   // _page: 이 블록이 소속된 페이지 번호 (크로스 페이지 지원용)
   units: [], // 이미 생성된 단위 목록
-  rangeStart: null, // 시작 페이지 (null이면 현재 페이지)
-  rangeEnd: null, // 끝 페이지 (null이면 현재 페이지)
   selectedTbId: null, // 쪼개기를 위해 선택된 단위 ID
   selectedTb: null, // 쪼개기를 위해 선택된 단위 객체
 };
-
-function _toBlockKey(page, blockId) {
-  return `${Number(page || 0)}::${String(blockId || "")}`;
-}
-
-function _blockToKey(block, fallbackPage) {
-  const page = block?._page ?? fallbackPage ?? viewerState.pageNum ?? 0;
-  return _toBlockKey(page, block?.block_id);
-}
-
-function _sourceRefToKey(ref, fallbackPage) {
-  if (!ref || !ref.layout_block_id) return null;
-  const page = ref.page ?? fallbackPage ?? viewerState.pageNum ?? 0;
-  return _toBlockKey(page, ref.layout_block_id);
-}
 
 /* ──────────────────────────
    초기화
@@ -70,7 +52,6 @@ function initCompositionEditor() {
  * 이벤트 바인딩.
  */
 function _bindCompEvents() {
-  const autoBtn = document.getElementById("comp-auto-btn");
   const splitBtn = document.getElementById("comp-split-btn");
   const splitCancelBtn = document.getElementById("comp-split-cancel-btn");
   const splitTextarea = document.getElementById("comp-split-textarea");
@@ -78,7 +59,6 @@ function _bindCompEvents() {
   const splitExecBtn = document.getElementById("comp-split-exec-btn");
   const resetBtn = document.getElementById("comp-reset-btn");
 
-  if (autoBtn) autoBtn.addEventListener("click", _autoCompose);
   if (splitBtn) splitBtn.addEventListener("click", _executeSplit);
   if (splitExecBtn) splitExecBtn.addEventListener("click", _executeSplit);
   if (splitCancelBtn) splitCancelBtn.addEventListener("click", _cancelSplit);
@@ -92,19 +72,27 @@ function _bindCompEvents() {
   if (resetBtn) resetBtn.addEventListener("click", _resetComposition);
   // 경계 제안 (D-088)
   const proposeBtn = document.getElementById("comp-propose-btn");
-  if (proposeBtn) proposeBtn.addEventListener("click", () => _proposeBoundaries());
+  if (proposeBtn) proposeBtn.addEventListener("click", _openProposePanel);
   const proposeCancel = document.getElementById("comp-propose-cancel-btn");
   if (proposeCancel) proposeCancel.addEventListener("click", _closeProposePanel);
   const proposeApply = document.getElementById("comp-propose-apply-btn");
   if (proposeApply) proposeApply.addEventListener("click", _applyProposals);
-  const rulesBtn = document.getElementById("comp-propose-rules-btn");
-  if (rulesBtn)
-    rulesBtn.addEventListener("click", () => {
-      const box = document.getElementById("comp-propose-rules");
-      if (box) box.style.display = box.style.display === "none" ? "" : "none";
+  // 신호 목록 (D-116): 고른 신호가 규칙이 된다 — 「후보 보기」는 저장 + 제안, 「전부 적용」은 저장 + 자동 트리
+  const sigPropose = document.getElementById("comp-signals-propose-btn");
+  if (sigPropose)
+    sigPropose.addEventListener("click", (ev) => {
+      ev.preventDefault(); // <summary> 안의 단추 — 접힘 토글을 막는다
+      _saveRulesAndRepropose();
     });
-  const rulesSave = document.getElementById("comp-rules-save-btn");
-  if (rulesSave) rulesSave.addEventListener("click", _saveRulesAndRepropose);
+  const applyAll = document.getElementById("comp-apply-all-btn");
+  if (applyAll) applyAll.addEventListener("click", _applyAllFromSignals);
+  const addBtn = document.getElementById("comp-signals-add-btn");
+  const addInput = document.getElementById("comp-signals-add-word");
+  if (addBtn) addBtn.addEventListener("click", _addManualWord);
+  if (addInput)
+    addInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") _addManualWord();
+    });
   const curRefresh = document.getElementById("comp-current-refresh");
   if (curRefresh) curRefresh.addEventListener("click", _renderCurrentBoundaries);
   // 사이드바에서 고른 것을 여기서도 표시한다 — 양쪽이 어긋나 보이면 안 된다
@@ -117,50 +105,10 @@ function _bindCompEvents() {
   });
   const rulesSuggest = document.getElementById("comp-rules-suggest-btn");
   if (rulesSuggest) rulesSuggest.addEventListener("click", _suggestRules);
-  const tocDetect = document.getElementById("comp-toc-detect-btn");
-  if (tocDetect) tocDetect.addEventListener("click", () => _detectToc(false));
-  const tocLlm = document.getElementById("comp-toc-llm-btn");
-  if (tocLlm) tocLlm.addEventListener("click", () => _detectToc(true));
   // textarea 입력 시 쪼개기 미리보기 업데이트
   if (splitTextarea)
     splitTextarea.addEventListener("input", _updateSplitPreview);
 
-  // 페이지 범위 입력 (시작~끝)
-  const startInput = document.getElementById("comp-page-start");
-  const endInput = document.getElementById("comp-page-end");
-  const applyBtn = document.getElementById("comp-page-range-apply");
-
-  const applyRange = () => {
-    const currentPage = Number(viewerState.pageNum || 1);
-    const start = Number(startInput?.value || currentPage);
-    const end = Number(endInput?.value || currentPage);
-
-    if (
-      !Number.isFinite(start) ||
-      !Number.isFinite(end) ||
-      start < 1 ||
-      end < 1
-    ) {
-      showToast("페이지 범위는 1 이상의 숫자로 입력해주세요.", 'warning');
-      return;
-    }
-
-    compState.rangeStart = Math.floor(start);
-    compState.rangeEnd = Math.floor(end);
-    _loadCompositionData();
-  };
-
-  if (applyBtn) applyBtn.addEventListener("click", applyRange);
-  if (startInput) {
-    startInput.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") applyRange();
-    });
-  }
-  if (endInput) {
-    endInput.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") applyRange();
-    });
-  }
 }
 
 /* ──────────────────────────
@@ -188,31 +136,6 @@ function deactivateCompositionMode() {
    페이지 범위 결정
    ────────────────────────── */
 
-/**
- * 로드할 페이지 번호 목록을 반환한다.
- *
- * 왜 이렇게 하는가:
- *   고전 텍스트에서 문장이 페이지 경계를 넘는 경우가 흔하다.
- *   "이전 페이지" / "다음 페이지" 체크박스를 켜면
- *   인접 페이지의 블록도 함께 보고 합칠 수 있다.
- *
- * 출력: [start..end] 형태의 페이지 번호 배열.
- */
-function _getPageRange(currentPage) {
-  // 쪽 범위 UI는 없앴다(단위는 권 전체를 목록에서 고른다). 남은 쓰임은 «자동 편성»이
-  // 볼 교정 텍스트뿐이라 늘 지금 쪽 하나다.
-  const rawStart = Number(compState.rangeStart ?? currentPage);
-  const rawEnd = Number(compState.rangeEnd ?? currentPage);
-  const start = Math.max(1, Math.floor(Math.min(rawStart, rawEnd)));
-  const end = Math.max(1, Math.floor(Math.max(rawStart, rawEnd)));
-
-  const pages = [];
-  for (let page = start; page <= end; page += 1) {
-    pages.push(page);
-  }
-  return pages;
-}
-
 /* ──────────────────────────
    데이터 로드
    ────────────────────────── */
@@ -236,32 +159,11 @@ async function _loadCompositionData() {
     _renderUnits();
     return;
   }
-
-  // 초기 진입 시 범위 기본값 = 현재 페이지
-  if (compState.rangeStart == null || compState.rangeEnd == null) {
-    compState.rangeStart = pageNum;
-    compState.rangeEnd = pageNum;
-  }
-
-  _syncPageRangeInputs();
-
-  // 페이지 표시기 업데이트
   _updatePageIndicator(pageNum);
 
-  const pages = _getPageRange(pageNum);
-
-  // 각 페이지의 교정된 텍스트를 병렬 로드
-  const correctedPromises = pages.map((p) =>
-    fetch(`/api/documents/${docId}/pages/${p}/corrected-text?part_id=${partId}`)
-      .then((r) => (r.ok ? r.json() : null))
-      .catch(() => null),
-  );
-
-  const promises = [...correctedPromises];
-
-  // 해석 저장소가 선택되어 있으면 단위도 로드 — **권 전체**를 한 번에.
-  // 왜 쪽으로 거르지 않는가: 손보기는 «경계를 적용한 뒤 그 단위 안에서 문단을 나누는» 일이다.
-  // 어느 쪽에 있는지 숫자로 짚는 것보다 단위를 목록에서 고르는 편이 낫다(사용자 지적).
+  // 단위 목록만 읽는다 — 옛 「자동 편성」이 보던 쪽별 교정 텍스트 조회는 D-116에서 없앴다
+  const promises = [];
+  const correctedPromises = [];
   if (interpState.interpId) {
     promises.push(
       fetch(`/api/interpretations/${interpState.interpId}/entities/unit?document_id=${docId}`)
@@ -269,22 +171,7 @@ async function _loadCompositionData() {
         .catch(() => null),
     );
   }
-
   const results = await Promise.all(promises);
-
-  // 교정된 텍스트: 여러 페이지를 합쳐서 _page 태깅
-  compState.sourceBlocks = [];
-  for (let i = 0; i < pages.length; i++) {
-    const correctedData = results[i];
-    if (correctedData && correctedData.blocks) {
-      // 각 블록에 소속 페이지 번호를 태깅
-      const tagged = correctedData.blocks.map((b) => ({
-        ...b,
-        _page: pages[i],
-      }));
-      compState.sourceBlocks.push(...tagged);
-    }
-  }
 
   // 단위 목록 — 권 전체
   compState.units = [];
@@ -309,20 +196,6 @@ function _updatePageIndicator(pageNum) {
   const el = document.getElementById("comp-page-indicator");
   // 범위 입력 옆에 「p.20」만 떠 있으면 그게 시작인지 지금인지 알 수 없다 — 말로 적는다
   if (el) el.textContent = `지금 ${pageNum}쪽`;
-}
-
-/**
- * 범위 입력 UI를 상태값과 동기화한다.
- */
-function _syncPageRangeInputs() {
-  const startInput = document.getElementById("comp-page-start");
-  const endInput = document.getElementById("comp-page-end");
-  if (startInput && compState.rangeStart != null) {
-    startInput.value = String(compState.rangeStart);
-  }
-  if (endInput && compState.rangeEnd != null) {
-    endInput.value = String(compState.rangeEnd);
-  }
 }
 
 /**
@@ -365,7 +238,7 @@ function _renderUnits() {
   if (compState.units.length === 0) {
     container.innerHTML =
       '<div class="placeholder" style="padding:20px; text-align:center; color:var(--text-muted);">' +
-      '아직 단위가 없습니다. 「경계 제안」이나 「자동 편성」을 쓰거나, 사이드바 「내용」의 «경계 넣기»로 첫 경계를 놓으세요.</div>';
+      '아직 단위가 없습니다. 「경계 제안」에서 신호를 골라 적용하거나, 사이드바 「내용」의 «경계 넣기»로 첫 경계를 놓으세요.</div>';
     return;
   }
 
@@ -516,136 +389,6 @@ function _updateCompStatus(text, isError) {
 
 /* ──────────────────────────
    편성 액션: 자동 편성
-   ────────────────────────── */
-
-/**
- * 현재 페이지의 LayoutBlock을 1:1로 단위으로 자동 생성한다.
- *
- * 왜 이렇게 하는가:
- *   대부분의 경우 LayoutBlock과 단위가 1:1 대응한다.
- *   "자동 편성" 버튼 하나로 빠르게 편성을 완료할 수 있게 한다.
- *   이미 편성된 블록은 건너뛴다.
- *
- * 자동 편성은 현재 페이지 블록만 대상으로 한다.
- * 왜: 인접 페이지 블록은 합치기 전용이다. 자동 편성은 그 페이지에서 직접 해야 한다.
- */
-async function _autoCompose() {
-  if (!viewerState.docId || !viewerState.partId) {
-    showToast("사이드바에서 문헌과 권을 먼저 고르세요.", "warning");
-    return;
-  }
-  const currentPage = viewerState.pageNum;
-
-  // 현재 페이지 블록만 필터
-  const currentPageBlocks = compState.sourceBlocks.filter(
-    (b) => (b._page || currentPage) === currentPage,
-  );
-
-  if (currentPageBlocks.length === 0) {
-    showToast("편성할 소스 블록이 없습니다.", 'warning');
-    return;
-  }
-
-  // 이미 편성된 블록 ID 수집
-  const composedKeys = new Set();
-  compState.units.forEach((tb) => {
-    const refs = tb.source_refs || [];
-    refs.forEach((r) => {
-      const key = _sourceRefToKey(r, currentPage);
-      if (key) composedKeys.add(key);
-    });
-    const singleKey = _sourceRefToKey(tb.source_ref, currentPage);
-    if (singleKey) {
-      composedKeys.add(singleKey);
-    }
-  });
-
-  // 편성 안 된 블록만 처리
-  const toCompose = currentPageBlocks.filter(
-    (b) => !composedKeys.has(_blockToKey(b, currentPage)),
-  );
-
-  if (toCompose.length === 0) {
-    _updateCompStatus("모든 블록이 이미 편성됨", false);
-    return;
-  }
-
-  _updateCompStatus(`편성 중... (${toCompose.length}개)`, false);
-
-  let created = 0;
-  const errors = [];
-  const baseSeq = compState.units.length;
-
-  for (let i = 0; i < toCompose.length; i++) {
-    const block = toCompose[i];
-    const text = block.corrected_text || block.original_text || "";
-    if (!text.trim()) continue;
-
-    // 여러 블록 생성 시 no_commit=true로 git commit을 건너뛴다
-    const useNoCommit = toCompose.length > 1;
-    const url =
-      `/api/interpretations/${interpState.interpId}/entities/unit/compose` +
-      (useNoCommit ? "?no_commit=true" : "");
-
-    try {
-      const res = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          sequence_index: baseSeq + i,
-          original_text: text,
-          part_id: viewerState.partId,
-          source_refs: [
-            {
-              document_id: viewerState.docId,
-              page: block._page || currentPage,
-              layout_block_id: block.block_id,
-              char_range: null,
-            },
-          ],
-        }),
-      });
-
-      if (res.ok) {
-        created++;
-      } else {
-        const err = await res.json().catch(() => ({}));
-        errors.push(
-          `${block.block_id}: ${err.error || err.detail || "HTTP " + res.status}`,
-        );
-        console.error(`단위 생성 실패 (${block.block_id}):`, err);
-      }
-    } catch (e) {
-      errors.push(`${block.block_id}: ${e.message}`);
-      console.error(`단위 생성 실패 (${block.block_id}):`, e);
-    }
-  }
-
-  // no_commit 모드였으면 마지막에 한 번만 커밋
-  if (created > 0 && toCompose.length > 1) {
-    await _commitBatch(`feat: 자동 편성 — ${created}개 단위 생성`);
-  }
-
-  if (errors.length > 0 && created === 0) {
-    showToast(`자동 편성 실패:\n\n${errors.join("\n")}`, 'error');
-    _updateCompStatus("자동 편성 실패", false);
-    return;
-  }
-  if (errors.length > 0) {
-    showToast(
-      `${created}개 생성, ${errors.length}개 실패:\n\n${errors.join("\n")}`,
-      'error',
-    );
-  }
-
-  _updateCompStatus(`${created}개 단위 생성 완료`, false);
-
-  // 데이터 새로고침
-  await _loadCompositionData();
-}
-
-/* ──────────────────────────
-   편성 액션: 쪼개기 (split)
    ────────────────────────── */
 
 /**
@@ -985,6 +728,311 @@ async function _executeSplit() {
    합치기·쪼개기를 블록 단위로 반복하는 대신 «어디서 글이 바뀌는가»만 정한다.
    ────────────────────────── */
 
+/* ──────────────────────────
+   이 책의 신호 (D-116) — 전문에서 센 규약 후보. 고른 것이 규칙이 된다
+   ────────────────────────── */
+
+const signalState = {
+  data: null, // /segmentation/signals 응답
+  docId: null, // 어느 문헌·권의 신호인가 — 다른 문헌으로 바꾼 뒤 옛 설정을 저장하면 안 된다
+  partId: null,
+  seq: 0, // 요청 세대. 늦게 끝난 옛 요청이 새 상태를 덮지 않게
+  checked: new Set(), // 켜진 신호 id
+  manual: [], // 사람이 더한 어휘 행 [{id, toggle, label}]
+  touched: false, // 권고에서 하나라도 바꿨는가 → origin "manual"
+};
+
+/** 신호 상태가 지금 고른 문헌·권의 것인가. */
+function _signalsCurrent() {
+  return !!signalState.data && signalState.docId === viewerState.docId && signalState.partId === viewerState.partId;
+}
+
+// 신호 id → 사람 말. 서버(core.rule_induction.SIGNAL_LABELS)와 같은 말을 쓴다
+const _SIGNAL_LABELS = {
+  date: "날짜가 행 첫머리에", mark: "○ 권점 + 날짜", volume: "卷頭 (卷之一 …)",
+  short_line: "짧은 행", after_short: "행갈음 뒤의 행", indent: "내려쓰기",
+};
+function _signalLabel(id) {
+  if (_SIGNAL_LABELS[id]) return _SIGNAL_LABELS[id];
+  if (id.startsWith("title_word:")) return `짧은 행이 「${id.slice(11)}」로 끝남`;
+  if (id.startsWith("head_word:")) return `행 첫머리 「${id.slice(10)}」`;
+  return id;
+}
+
+/** 서버가 센 행 + 사람이 더한 행. 렌더·규칙 조립이 같은 목록을 본다. */
+function _signalRows() {
+  const rows = signalState.data ? signalState.data.signals.slice() : [];
+  return rows.concat(signalState.manual);
+}
+
+/**
+ * 전문에서 신호를 센다(규칙만, 저장 없음). 체크 상태는 저장된 규칙이 있으면 그것, 없으면 권고.
+ *
+ * 왜 저장된 규칙을 우선하는가: 사람이 한 번 고른 것을 다음에 열 때 권고로 되돌리면 안 된다.
+ * 저장된 어휘가 이번 셈에 없으면(표본이 바뀌었거나 손으로 넣은 것) 「손으로 넣음」 행으로 남긴다.
+ */
+async function _loadSignals() {
+  const list = document.getElementById("comp-signals-list");
+  const summary = document.getElementById("comp-signals-summary");
+  if (!list) return;
+  list.innerHTML = '<div class="placeholder">전문을 세는 중…</div>';
+  signalState.data = null;
+  signalState.manual = [];
+  signalState.touched = false;
+  const seq = ++signalState.seq;
+  const docId = viewerState.docId;
+  const partId = viewerState.partId;
+  try {
+    const res = await fetch(`/api/documents/${encodeURIComponent(docId)}/segmentation/signals`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ part_id: partId }),
+    });
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.error || `HTTP ${res.status}`);
+    if (seq !== signalState.seq) return; // 그 사이 다른 문헌·권으로 다시 불렀다
+    signalState.data = d;
+    signalState.docId = docId;
+    signalState.partId = partId;
+    const saved = d.saved_rules;
+    const ids = new Set(d.signals.map((s) => s.id));
+    // «저장된 설정»은 origin이 있을 때만이 아니다 — D-116 전에 저장한 표제 어휘·스위치도 그렇다
+    // (서버 rules_are_empty와 같은 판정). 없으면 서버가 권고에서 만든 recommended_rules를 따른다 —
+    // 주 신호를 하나도 권고하지 못한 표본에서 서버는 주 신호를 기본값(켬)으로 두는데, 화면이
+    // recommended 표시만 보고 다 끄면 「전부 적용」이 «적용할 구간이 없습니다»로 끝난다(Codex 지적).
+    const hasSaved = !!saved && !!(saved.origin || saved.title_words?.length || saved.head_words?.length || Object.keys(saved.signals || {}).length);
+    const base = hasSaved ? saved : d.recommended_rules;
+    if (base) {
+      signalState.checked = new Set();
+      for (const s of d.signals) {
+        if (s.toggle.startsWith("signals.")) {
+          const k = s.toggle.slice(8);
+          if (base.signals?.[k] !== false) signalState.checked.add(s.id);
+        } else if (s.toggle === "title_words") {
+          if ((base.title_words || []).includes(s.id.slice(11))) signalState.checked.add(s.id);
+        } else if (s.toggle === "head_words") {
+          if ((base.head_words || []).includes(s.id.slice(10))) signalState.checked.add(s.id);
+        }
+      }
+      for (const w of base.title_words || []) {
+        const id = `title_word:${w}`;
+        if (!ids.has(id)) signalState.manual.push({ id, toggle: "title_words", label: `「${w}」로 끝남 (손으로 넣음)`, manual: true });
+        signalState.checked.add(id);
+      }
+      for (const w of base.head_words || []) {
+        const id = `head_word:${w}`;
+        if (!ids.has(id)) signalState.manual.push({ id, toggle: "head_words", label: `행 첫머리 「${w}」 (손으로 넣음)`, manual: true });
+        signalState.checked.add(id);
+      }
+      // 목록에 없는데 저장에서 꺼 둔 스위치(예: bbox가 없어 세지 못한 내려쓰기) — 화면에 행으로 보여
+      // 켤 수 있게 한다. 안 보이면 저장할 때 조용히 되살아난다(Codex 지적).
+      for (const [k, on] of Object.entries(base.signals || {})) {
+        const id = k;
+        if (on === false && !ids.has(id) && _SIGNAL_LABELS[k]) {
+          signalState.manual.push({ id, toggle: `signals.${k}`, label: `${_SIGNAL_LABELS[k]} (이번 셈에는 없음 — 저장에서 꺼 둠)`, manual: true, group: ["short_line", "after_short", "indent"].includes(k) ? "aux" : "primary" });
+        }
+      }
+      signalState.touched = hasSaved && saved.origin === "manual";
+    } else {
+      signalState.checked = new Set(d.signals.filter((s) => s.recommended).map((s) => s.id));
+    }
+    _rulesToForm(hasSaved ? saved : d.recommended_rules);
+    if (summary) {
+      const src = d.source || {};
+      const where = src.l2_pages
+        ? `확정본 ${src.l4_pages}쪽 + OCR ${src.l2_pages}쪽`
+        : `확정본 ${src.l4_pages}쪽`;
+      summary.textContent = `${d.lines}행 (${where}) · ` + (hasSaved ? (saved.origin === "manual" || !saved.origin ? "저장된 설정(손봄)" : "저장된 설정(자동 도출)") : "아직 저장 안 됨 — 권고 상태");
+    }
+    _renderSignals();
+  } catch (e) {
+    list.innerHTML = `<div class="placeholder">신호를 세지 못했습니다: ${e.message}</div>`;
+  }
+}
+
+/** 저장이 끝났다는 것을 요약 줄이 말하게 한다 — 「후보 보기」 뒤에도 «아직 저장 안 됨»이 남아 있었다. */
+function _markRulesSaved(saved) {
+  if (signalState.data) signalState.data.saved_rules = saved;
+  const summary = document.getElementById("comp-signals-summary");
+  if (!summary || !signalState.data) return;
+  const src = signalState.data.source || {};
+  const where = src.l2_pages ? `확정본 ${src.l4_pages}쪽 + OCR ${src.l2_pages}쪽` : `확정본 ${src.l4_pages}쪽`;
+  summary.textContent =
+    `${signalState.data.lines}행 (${where}) · ` +
+    (saved?.origin === "manual" ? "저장된 설정(손봄)" : "저장된 설정(자동 도출)");
+}
+
+function _renderSignals() {
+  const list = document.getElementById("comp-signals-list");
+  if (!list) return;
+  list.innerHTML = "";
+  // 주 신호(혼자 후보를 만드는 것)를 앞에, 보조를 뒤에 — 점수 순서대로 섞이면 «무엇이 규약인가»가 안 보인다
+  const rows = _signalRows().sort((a, b) => (a.group === "aux") - (b.group === "aux"));
+  if (!rows.length) {
+    list.innerHTML = '<div class="placeholder">되풀이되는 표지를 찾지 못했습니다. 어휘를 직접 더하거나 목차를 쓰세요.</div>';
+  }
+  const maxScore = Math.max(0.01, ...rows.map((r) => r.score || 0));
+  for (const r of rows) {
+    const row = document.createElement("div");
+    row.className = "comp-sig-row" + (r.group === "aux" ? " is-aux" : "") + (r.manual ? " is-manual" : "");
+    const main = document.createElement("label");
+    main.className = "comp-sig-main";
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = signalState.checked.has(r.id);
+    cb.addEventListener("change", () => {
+      if (cb.checked) signalState.checked.add(r.id);
+      else signalState.checked.delete(r.id);
+      signalState.touched = true;
+    });
+    const label = document.createElement("span");
+    label.className = "comp-sig-label";
+    label.textContent = r.label || _signalLabel(r.id);
+    const count = document.createElement("span");
+    count.className = "comp-sig-count";
+    count.textContent = r.count != null ? `${r.count}회` : "";
+    main.appendChild(cb);
+    main.appendChild(label);
+    main.appendChild(count);
+    if (r.group === "aux") {
+      const aux = document.createElement("span");
+      aux.className = "comp-sig-aux";
+      aux.textContent = "보조";
+      aux.title = "혼자서는 후보를 만들지 않고, 날짜·어휘가 있는 행의 신뢰도만 올립니다";
+      main.appendChild(aux);
+    }
+    row.appendChild(main);
+    if (r.score != null) {
+      const bar = document.createElement("span");
+      bar.className = "comp-sig-bar";
+      bar.title = `점수 ${r.score} — 횟수 × 간격의 고름` + (r.chain != null ? ` × 날짜 사슬 ${r.chain}` : "");
+      const fill = document.createElement("span");
+      fill.style.width = `${Math.round((r.score / maxScore) * 100)}%`;
+      bar.appendChild(fill);
+      row.appendChild(bar);
+    }
+    if (r.examples && r.examples.length) {
+      const ex = document.createElement("span");
+      ex.className = "comp-sig-ex";
+      ex.textContent = r.examples[0];
+      ex.title = r.examples.join("\n");
+      row.appendChild(ex);
+    }
+    if (r.manual) {
+      const rm = document.createElement("button");
+      rm.type = "button";
+      rm.className = "comp-sig-remove";
+      rm.textContent = "×";
+      rm.title = "이 어휘 행을 지웁니다";
+      rm.addEventListener("click", () => {
+        signalState.manual = signalState.manual.filter((m) => m.id !== r.id);
+        signalState.checked.delete(r.id);
+        // 목록 밖 스위치 행을 지우면 «저장에서 꺼 둠»도 지운다 — 기본(켬)으로 돌아간다
+        if (r.toggle.startsWith("signals.") && signalState.data?.saved_rules?.signals) delete signalState.data.saved_rules.signals[r.id];
+        signalState.touched = true;
+        _renderSignals();
+      });
+      row.appendChild(rm);
+    }
+    list.appendChild(row);
+  }
+  const d = signalState.data;
+  if (d && (d.dropped?.length || d.furniture?.length)) {
+    const note = document.createElement("div");
+    note.className = "comp-sig-dropped";
+    const parts = [];
+    if (d.dropped?.length) parts.push("쪽마다 같은 자리라 뺀 것: " + d.dropped.map((x) => `${x.label} ${x.count}회`).join(" · "));
+    if (d.furniture?.length) parts.push("판심·엽수로 본 행: " + d.furniture.slice(0, 6).join(" · ") + (d.furniture.length > 6 ? ` … (${d.furniture.length})` : ""));
+    note.textContent = parts.join("  |  ");
+    note.title = "종이의 규약(판심·엽수·인쇄소 도장)은 글의 시작이 아니므로 후보에서 뺍니다";
+    list.appendChild(note);
+  }
+}
+
+/** 어휘 행을 목록에 더한다(켜진 채로). 이미 있으면 켜기만. */
+function _addWordRow(id, toggle, label) {
+  const exists = _signalRows().some((r) => r.id === id);
+  if (!exists) signalState.manual.push({ id, toggle, label, manual: true });
+  signalState.checked.add(id);
+  signalState.touched = true;
+  _renderSignals();
+}
+
+function _addManualWord() {
+  const input = document.getElementById("comp-signals-add-word");
+  if (!input) return;
+  let w = input.value.trim();
+  if (!w) return;
+  if (!signalState.data) {
+    showToast("먼저 「경계 제안」으로 신호를 세세요.", "warning");
+    return;
+  }
+  if (w.startsWith("^")) {
+    w = w.slice(1).trim();
+    if (w) _addWordRow(`head_word:${w}`, "head_words", `행 첫머리 「${w}」 (손으로 넣음)`);
+  } else {
+    _addWordRow(`title_word:${w}`, "title_words", `「${w}」로 끝남 (손으로 넣음)`);
+  }
+  input.value = "";
+}
+
+/**
+ * 「전부 적용해 새로 세우기」 — 신호 설정을 저장하고 그 규칙이 승인한 후보 전부로 개요를 세운다.
+ * 사이드바 「자동 트리」와 같은 서버 경로(/segmentation/auto). 확인창 없음: 결과는 Git으로 되돌릴 수 있고,
+ * 사용자가 신호를 골라 놓은 상태에서 누르는 단추라 «정말요?»는 되묻는 것이다.
+ */
+async function _applyAllFromSignals() {
+  if (!viewerState.docId || !viewerState.partId) {
+    showToast("사이드바에서 문헌과 권을 먼저 고르세요.", "warning");
+    return;
+  }
+  if (!_signalsCurrent()) {
+    await _openProposePanel();
+    if (!_signalsCurrent()) return;
+  }
+  const rules = _rulesFromForm();
+  const btn = document.getElementById("comp-apply-all-btn");
+  if (btn) { btn.disabled = true; btn.textContent = "세우는 중…"; }
+  try {
+    let res = await fetch(`/api/documents/${encodeURIComponent(viewerState.docId)}/segmentation-rules`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rules }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || `HTTP ${res.status}`);
+    }
+    const llmSel = typeof getLlmModelSelection === "function" ? getLlmModelSelection("comp-llm-model-select") : {};
+    const useToc = document.getElementById("comp-toc-use")?.checked !== false;
+    res = await fetch(`/api/documents/${encodeURIComponent(viewerState.docId)}/segmentation/auto`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        part_id: viewerState.partId,
+        use_llm_toc: rules.toc_llm,
+        force_provider: rules.toc_llm ? llmSel.force_provider || null : null,
+        force_model: rules.toc_llm ? llmSel.force_model || null : null,
+        replace: "all",
+        use_toc: useToc, // 목차 줄을 껐으면 서버도 목차 감지·대조·LLM을 모두 건너뛴다
+        toc_pages: useToc ? _tocPagesFromInput() : null,
+        toc_only: useToc ? null : false,
+      }),
+    });
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.error || `HTTP ${res.status}`);
+    if (typeof describeAutoTreeResult === "function") showToast(describeAutoTreeResult(d, rules.toc_llm), "success");
+    else showToast(`후보 ${d.proposals} 중 ${d.applied}개로 개요를 세웠습니다`, "success");
+    _closeProposePanel();
+    await _loadCompositionData();
+    if (typeof refreshContentsTree === "function") refreshContentsTree();
+  } catch (e) {
+    showToast(`새로 세우기 실패: ${e.message}`, "error");
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = "전부 적용해 새로 세우기"; }
+  }
+}
+
 const proposeState = {
   data: null, // /segmentation/propose 응답
   checked: new Set(), // 승인한 제안 index
@@ -1007,10 +1055,12 @@ function _tocPagesFromInput() {
 async function _detectToc(useLlm) {
   if (!viewerState.docId || !viewerState.partId) {
     showToast("사이드바에서 문헌과 권을 먼저 고르세요.", "warning");
-    return;
+    return null;
   }
   const summary = document.getElementById("comp-toc-summary");
-  if (summary) summary.textContent = useLlm ? "목차: LLM이 읽는 중…" : "목차: 찾는 중…";
+  if (summary) summary.textContent = useLlm ? "목차: LLM이 읽는 중…" : "목차: 규칙으로 찾는 중…";
+  // 결과 요약에 «규칙»인지 «LLM»인지 남긴다 — 제안 목록의 「목차 …」 근거가 어디서 왔는지 보이도록
+  proposeState.tocSource = useLlm ? "LLM" : "규칙";
   try {
     const llmSel =
       typeof getLlmModelSelection === "function"
@@ -1031,39 +1081,75 @@ async function _detectToc(useLlm) {
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
     if (!data.toc_pages.length) {
       proposeState.toc = null;
-      if (summary) summary.textContent = "목차: 목차로 보이는 쪽이 없습니다 (쪽 번호를 직접 넣어 보세요)";
-      return;
+      if (summary) summary.textContent = "없음 (쪽 번호를 직접 넣어 보세요)";
+      return null;
     }
     proposeState.toc = { pages: data.toc_pages, entries: data.entries };
+    if (summary)
+      summary.textContent = `${data.toc_pages.join(",")}쪽 · ${data.entries.length}항목 (${proposeState.tocSource})`;
     const input = document.getElementById("comp-toc-pages");
     if (input && !input.value) input.value = data.toc_pages.join(",");
     if (data.meta?.error) showToast(`LLM 실패로 규칙 추출을 썼습니다: ${data.meta.error}`, "warning");
-    await _proposeBoundaries();
+    return proposeState.toc;
   } catch (e) {
-    if (summary) summary.textContent = `목차: 실패 — ${e.message}`;
+    if (summary) summary.textContent = `실패 — ${e.message}`;
+    return null;
   }
 }
 
+/**
+ * 신호 목록의 체크 상태 + 참고·억제 칸 → 이 문헌의 segmentation_rules (D-116).
+ *
+ * 스위치 신호(날짜·○권점·卷頭·짧은 행·행갈음·내려쓰기)는 signals.*로, 어휘 행은
+ * title_words·head_words로 간다. 목록에 없는 스위치(예: bbox가 없어 세지 못한 내려쓰기)는
+ * 적지 않는다 — 빠진 키는 켜진 것이라(normalize_rules) L2가 생기면 저절로 살아난다.
+ * origin: 권고 그대로면 "induced", 사람이 하나라도 바꿨으면 "manual".
+ */
 function _rulesFromForm() {
-  const words = (document.getElementById("comp-rules-words")?.value || "")
-    .split(/[,，、\s]+/)
-    .map((w) => w.trim())
-    .filter(Boolean);
   const suppress = (document.getElementById("comp-rules-suppress")?.value || "")
     .split("\n")
     .map((w) => w.trim())
     .filter(Boolean);
   const maxChars = Number(document.getElementById("comp-rules-maxchars")?.value || 14);
   const reference = (document.getElementById("comp-rules-reference")?.value || "").trim();
-  return { title_words: words, suppress, max_title_chars: maxChars, reference_text: reference };
+  // 바탕은 저장된 규칙 — 목록에 없는 스위치·min_confidence·옛 판심 목록을 잃지 않는다.
+  // use_date·use_layout(옛 굵은 스위치)은 버린다: 이제 signals가 낱낱이 적히고, 남겨 두면
+  // normalize_rules가 그것으로 하위 스위치를 다시 끈다.
+  const saved = signalState.data?.saved_rules || {};
+  const signals = { ...(saved.signals || {}) };
+  const title_words = [];
+  const head_words = [];
+  let touched = signalState.touched;
+  for (const row of _signalRows()) {
+    const on = signalState.checked.has(row.id);
+    if (row.toggle.startsWith("signals.")) signals[row.toggle.slice(8)] = on;
+    else if (on && row.toggle === "title_words") title_words.push(row.id.slice("title_word:".length));
+    else if (on && row.toggle === "head_words") head_words.push(row.id.slice("head_word:".length));
+    if (row.manual || on !== !!row.recommended) touched = true;
+  }
+  const induced = signalState.data?.furniture || [];
+  const furniture = [...new Set([...(saved.furniture || []), ...induced])];
+  const { use_date, use_layout, origin, ...rest } = saved; // eslint-disable-line no-unused-vars
+  return {
+    ...rest,
+    signals,
+    title_words,
+    head_words,
+    furniture,
+    suppress,
+    max_title_chars: maxChars,
+    reference_text: reference,
+    toc_llm: !!document.getElementById("comp-toc-llm")?.checked,
+    origin: touched ? "manual" : "induced",
+  };
 }
 
 function _rulesToForm(rules) {
-  const w = document.getElementById("comp-rules-words");
   const s = document.getElementById("comp-rules-suppress");
   const m = document.getElementById("comp-rules-maxchars");
-  if (w) w.value = (rules?.title_words || []).join(", ");
   if (s) s.value = (rules?.suppress || []).join("\n");
+  const tocLlm = document.getElementById("comp-toc-llm");
+  if (tocLlm && rules && typeof rules.toc_llm === "boolean") tocLlm.checked = rules.toc_llm;
   if (m) m.value = rules?.max_title_chars || 14;
   const r = document.getElementById("comp-rules-reference");
   if (r) {
@@ -1187,7 +1273,30 @@ async function _renderCurrentBoundaries() {
   }
 }
 
-async function _proposeBoundaries(rulesOverride) {
+/**
+ * 「경계 제안」 — 편성 흐름의 입구 (D-116).
+ *
+ * 순서: 전문에서 신호를 센다(규칙만) → 목차 쪽을 찾는다(규칙만) → 저장된 규칙(없으면 권고)으로
+ * 후보를 보인다. 여기서는 아무것도 저장하지 않는다 — 「후보 보기」·「전부 적용」이 저장한다.
+ */
+async function _openProposePanel() {
+  if (!viewerState.docId || !viewerState.partId) {
+    showToast("사이드바에서 문헌과 권을 먼저 고르세요.", "warning");
+    return;
+  }
+  const panel = document.getElementById("comp-propose-panel");
+  const list = document.getElementById("comp-propose-list");
+  if (!panel || !list) return;
+  panel.style.display = "";
+  list.innerHTML = '<div class="placeholder">전문을 세는 중…</div>';
+  proposeState.toc = null;
+  const summary = document.getElementById("comp-toc-summary");
+  if (summary) summary.textContent = "찾는 중…";
+  await Promise.all([_loadSignals(), _detectToc(false)]);
+  await _proposeBoundaries();
+}
+
+async function _proposeBoundaries() {
   if (!viewerState.docId || !viewerState.partId) {
     showToast("사이드바에서 문헌과 권을 먼저 고르세요.", "warning");
     return;
@@ -1197,15 +1306,16 @@ async function _proposeBoundaries(rulesOverride) {
   if (!panel || !list) return;
   panel.style.display = "";
   list.innerHTML = '<div class="placeholder">권 전체 확정본을 읽어 경계를 찾는 중…</div>';
+  const useToc = document.getElementById("comp-toc-use")?.checked !== false;
   try {
     const res = await fetch(`/api/documents/${encodeURIComponent(viewerState.docId)}/segmentation/propose`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         part_id: viewerState.partId,
-        rules: rulesOverride || null,
-        use_toc: true,
-        toc: proposeState.toc,
+        rules: signalState.data ? _rulesFromForm() : null,
+        use_toc: useToc,
+        toc: useToc ? proposeState.toc : null,
       }),
     });
     const data = await res.json();
@@ -1231,7 +1341,8 @@ const _REASON_LABELS = {
   same_day: ["같은 날", "pos"], month_rolled: ["달 넘김", ""], long_line: ["긴 행", "neg"],
   no_title_word: ["어휘 없음", "neg"], same_day_repeat: ["같은 날짜 되풀이", "neg"],
   word_in_clause: ["문장 속 어휘", "neg"], date_jump: ["날짜 역행", "neg"], suppressed: ["억제", "neg"],
-  volume_repeat: ["卷 되풀이(판심)", "neg"],
+  volume_repeat: ["卷 되풀이(판심)", "neg"], furniture: ["판심·엽수", "neg"],
+  date_wrap: ["행 넘긴 날짜", "pos"], after_short: ["행갈음 시작", "pos"],
   indent_shallow: ["얕은 들여쓰기 → 묶음", ""], indent_deep: ["깊은 들여쓰기 → 조각", ""],
 };
 function _reasonChip(r) {
@@ -1239,6 +1350,7 @@ function _reasonChip(r) {
   if (r.startsWith("toc:")) { label = `목차 ${r.slice(4)}`; cls = "pos"; }
   else if (r.startsWith("volume:")) { label = `卷 ${r.slice(7)}`; cls = "pos"; }
   else if (r.startsWith("title_word:")) { label = `어휘 ${r.slice(11)}`; cls = "pos"; }
+  else if (r.startsWith("head_word:")) { label = `행머리 ${r.slice(10)}`; cls = "pos"; }
   else if (_REASON_LABELS[r]) [label, cls] = _REASON_LABELS[r];
   const s = document.createElement("span");
   s.className = `prop-reason ${cls}`;
@@ -1294,7 +1406,9 @@ function _renderProposals() {
     const n = data.toc.entries.length;
     const m = data.toc.matches?.length || 0;
     if (tocSummary)
-      tocSummary.textContent = `목차: ${data.toc.pages.join(",")}쪽 · ${n}항목 중 ${m} 대조`;
+      tocSummary.textContent =
+        `${data.toc.pages.join(",")}쪽 · ${n}항목 중 ${m} 대조` +
+        (proposeState.tocSource ? ` (${proposeState.tocSource})` : "");
     if (unmatchedBox) {
       const un = data.toc.unmatched || [];
       unmatchedBox.style.display = un.length ? "" : "none";
@@ -1303,13 +1417,13 @@ function _renderProposals() {
         : "";
     }
   } else {
-    if (tocSummary && !proposeState.toc) tocSummary.textContent = "목차: 없음 또는 미확인";
+    if (tocSummary && !proposeState.toc) tocSummary.textContent = "없음";
     if (unmatchedBox) unmatchedBox.style.display = "none";
   }
   list.innerHTML = "";
   if (!data.proposals.length) {
     list.innerHTML =
-      '<div class="placeholder">경계 후보가 없습니다. 「규칙」에서 표제 어휘를 적어 보세요 (예: 談草, 筆談).</div>';
+      '<div class="placeholder">경계 후보가 없습니다. 위 「이 책의 신호」에서 신호를 더 켜거나 어휘를 더해 보세요 (예: 談草, ^有).</div>';
     return;
   }
   // 문턱 아래 후보는 기본으로 숨긴다 — 보이는 목록은 «승인 후보»여야 읽힌다
@@ -1478,19 +1592,22 @@ function _renderRuleCandidates(d) {
     b.type = "button";
     b.className = "comp-rules-cand";
     b.textContent = text;
-    b.title = isList ? "억제 목록에 넣기" : "표제 어휘에 넣기";
+    b.title = isList ? "억제 목록에 넣기" : "신호 목록에 표제 어휘로 넣기 (켜진 채로)";
     b.addEventListener("click", () => {
-      const el = document.getElementById(targetId);
-      if (!el) return;
-      const cur = el.value.trim();
-      const sep = isList ? "\n" : ", ";
-      const has = cur.split(isList ? /\n/ : /\s*,\s*/).some((x) => x.trim() === text);
-      if (!has) el.value = cur ? cur + sep + text : text;
+      if (isList) {
+        const el = document.getElementById(targetId);
+        if (!el) return;
+        const cur = el.value.trim();
+        const has = cur.split(/\n/).some((x) => x.trim() === text);
+        if (!has) el.value = cur ? cur + "\n" + text : text;
+      } else {
+        _addWordRow(`title_word:${text}`, "title_words", `「${text}」로 끝남 (LLM 후보)`);
+      }
       b.disabled = true;
     });
     out.appendChild(b);
   };
-  for (const w of words) add(w, "comp-rules-words", false);
+  for (const w of words) add(w, null, false);
   for (const s of sup) add(s, "comp-rules-suppress", true);
   if (d.note) {
     const n = document.createElement("div");
@@ -1500,6 +1617,10 @@ function _renderRuleCandidates(d) {
 }
 
 async function _saveRulesAndRepropose() {
+  if (!_signalsCurrent()) {
+    await _openProposePanel(); // 다른 문헌·권의 신호를 이 문헌에 저장하면 안 된다
+    return;
+  }
   const rules = _rulesFromForm();
   try {
     const res = await fetch(`/api/documents/${viewerState.docId}/segmentation-rules`, {
@@ -1511,11 +1632,17 @@ async function _saveRulesAndRepropose() {
       const err = await res.json().catch(() => ({}));
       throw new Error(err.error || `HTTP ${res.status}`);
     }
+    const saved = await res.json().catch(() => null);
+    _markRulesSaved(saved?.segmentation_rules || rules);
   } catch (e) {
     showToast(`규칙 저장 실패: ${e.message}`, "error");
     return;
   }
-  await _proposeBoundaries(rules);
+  // 목차 줄의 LLM 스위치가 켜져 있으면 여기서 한 번 모델을 부른다(목차 쪽 텍스트만)
+  if (document.getElementById("comp-toc-use")?.checked !== false) {
+    await _detectToc(!!rules.toc_llm);
+  }
+  await _proposeBoundaries();
 }
 
 function _closeProposePanel() {

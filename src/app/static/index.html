@@ -395,7 +395,7 @@
                 <button
                   id="contents-auto-btn"
                   class="section-action-btn"
-                  title="목차·해제·들여쓰기·위치로 개요를 자동으로 세웁니다. 이 권의 기존 경계는 새로 세워집니다 (Git으로 되돌릴 수 있음)"
+                  title="바로 가기: 편성 탭 「전부 적용해 새로 세우기」와 같습니다. 이 책에서 찾은 신호(목차·卷頭·날짜·○권점·어휘)로 개요를 세웁니다 — 규칙이 아직 없으면 전문에서 먼저 찾아 저장합니다. LLM은 편성 탭의 「LLM으로 구조화」 스위치를 켠 경우에만 목차 항목에 씁니다. 이 권의 기존 경계는 새로 세워집니다 (Git으로 되돌릴 수 있음)"
                 >
                   자동 트리
                 </button>
@@ -1888,7 +1888,7 @@
               <button
                 id="comp-propose-btn"
                 class="text-btn text-btn-primary"
-                title="권 전체 확정본에서 글 단위 경계를 제안합니다 (날짜·표제 어휘·형식·卷 표제). 승인한 것만 단위가 됩니다"
+                title="규칙만 씁니다 (LLM 안 씀). 권 전체 확정본에서 글 단위 경계를 제안합니다 (날짜·○권점·표제 어휘·짧은 행·들여쓰기·卷 표제). 승인한 것만 단위가 됩니다"
               >
                 경계 제안
               </button>
@@ -1917,47 +1917,66 @@
                   <span class="comp-propose-title">경계 제안</span>
                   <span id="comp-propose-stats" class="comp-propose-stats"></span>
                   <div style="flex: 1"></div>
-                  <button id="comp-propose-rules-btn" class="text-btn" style="font-size: 11px" title="표제 어휘·억제 목록 (이 문헌의 설정)">규칙</button>
                   <button id="comp-propose-cancel-btn" class="text-btn" style="font-size: 11px">닫기</button>
-                  <button id="comp-propose-apply-btn" class="text-btn text-btn-primary" style="font-size: 11px">선택 적용</button>
+                  <button id="comp-propose-apply-btn" class="text-btn text-btn-primary" style="font-size: 11px" title="아래 후보 중 체크한 것만 경계로 만듭니다. 전에 제안으로 만든 경계 중 체크가 빠진 것은 지워지고, 손으로 넣은 경계는 남습니다">골라 적용</button>
+                  <button id="comp-apply-all-btn" class="text-btn text-btn-primary" style="font-size: 11px" title="신호 설정을 저장하고, 그 규칙이 승인한 후보 전부로 이 권의 개요를 새로 세웁니다 (기존 경계는 지워지며 Git으로 되돌릴 수 있음). 사이드바 「자동 트리」와 같습니다">전부 적용해 새로 세우기</button>
                 </div>
-                <div id="comp-propose-rules" class="comp-propose-rules" style="display: none">
-                  <label>해제·참고 텍스트 <small>(한국고전종합DB 해제 같은 것을 <b>통째로</b> 붙여 넣으세요 — 권별 내용을 골라 씁니다)</small>
-                    <textarea id="comp-rules-reference" rows="6" placeholder="해제 전문을 그대로 붙여 넣어도 됩니다. 길면 권별 내용이 있는 데를 골라 LLM에 넘깁니다.&#10;예: 운양집 중간본 16권 8책. 권1~6 시, 권7 이하 문. 각 권 앞에 총목이 있다…"></textarea>
-                    <span id="comp-rules-reference-count" class="comp-rules-count"></span>
-                  </label>
-                  <details class="comp-rules-advanced">
-                    <summary>고급 규칙 — 표제 어휘·억제·글자수 <small>(談草·筆談처럼 표제가 규칙적인 일기·담초류에만)</small></summary>
-                    <label>표제 어휘 <small>(쉼표로 구분 — 예: 談草, 筆談, 口談)</small>
-                      <input id="comp-rules-words" type="text" placeholder="이 문헌에서 표제를 끝맺는 말" />
+                <!-- 규칙 도구와 LLM 도구가 한 패널에 있다. 무엇이 모델을 부르는지 여기서 한 번 말한다 -->
+                <div class="comp-llm-legend">
+                  신호 세기·경계 제안·적용은 <b>규칙만</b> 씁니다. <span class="llm-tag">LLM</span> 스위치·단추만 텍스트를 모델에 보냅니다 (이미지는 보내지 않음).
+                </div>
+                <!-- 1단계 — 이 책의 신호 (D-116): 전문에서 센 규약 후보를 체크박스로. 고른 것이 규칙(문헌 설정)이 된다.
+                     흐름: 신호 고르기 → 「후보 보기」 → 체크해 「골라 적용」, 또는 바로 「전부 적용해 새로 세우기」 -->
+                <details id="comp-signals" class="comp-signals" open>
+                  <summary>
+                    <span class="comp-signals-title">이 책의 신호</span>
+                    <span id="comp-signals-summary" class="comp-propose-stats"></span>
+                    <button id="comp-signals-propose-btn" class="text-btn text-btn-sm" title="체크한 신호를 이 문헌의 규칙으로 저장하고 후보를 다시 찾습니다 (규칙만)">후보 보기</button>
+                  </summary>
+                  <!-- 목차 줄 (D-089) — 신호 목록의 첫 줄. LLM 스위치는 여기 하나(항목 구조화)뿐이다 -->
+                  <div id="comp-toc-row" class="comp-sig-row comp-toc-row">
+                    <label class="comp-sig-main">
+                      <input id="comp-toc-use" type="checkbox" checked />
+                      <span class="comp-sig-label">목차</span>
+                      <span id="comp-toc-summary" class="comp-sig-count">확인 전</span>
                     </label>
-                    <div class="comp-rules-suggest">
-                      <button id="comp-rules-suggest-btn" class="text-btn" style="font-size: 11px" title="해제와 본문의 짧은 행을 LLM에 보여 표제 어휘 후보를 뽑습니다. 넣을지는 직접 정합니다">해제·본문에서 뽑기</button>
-                      <span id="comp-rules-suggest-out" class="comp-rules-suggest-out"></span>
-                    </div>
-                    <label>억제 목록 <small>(표제로 보지 않을 행, 한 줄에 하나)</small>
-                      <textarea id="comp-rules-suppress" rows="2"></textarea>
+                    <label class="comp-sig-opt">쪽
+                      <input id="comp-toc-pages" type="text" placeholder="자동" style="width: 56px; font-size: 11px" title="쉼표로 구분 (예: 3,4). 비우면 자동 판별" />
                     </label>
-                    <label>별행 표제 최대 글자수
-                      <input id="comp-rules-maxchars" type="number" min="2" max="60" value="14" style="width: 60px" />
+                    <label class="comp-sig-opt" title="목차 쪽의 텍스트만 모델에 보내 항목을 구조화합니다 (해제가 있으면 함께). 본문·이미지는 보내지 않습니다. 실패하면 규칙 결과로 돌아갑니다. 사이드바 「자동 트리」도 이 스위치를 따릅니다">
+                      <input id="comp-toc-llm" type="checkbox" />
+                      LLM으로 구조화 <span class="llm-tag">LLM</span>
                     </label>
-                  </details>
-                  <div style="display: flex; gap: 6px">
-                    <button id="comp-rules-save-btn" class="text-btn" style="font-size: 11px">저장하고 다시 제안</button>
+                    <select id="comp-llm-model-select" class="props-select llm-model-select" style="font-size: 11px; max-width: 150px"
+                      title="LLM 스위치·단추에 쓸 모델. «자동»은 사용 가능한 프로바이더 순서(Ollama → Gemini …)로 넘어갑니다"></select>
                   </div>
-                </div>
-                <!-- 목차 신호 (D-089) -->
-                <div id="comp-toc-row" class="comp-toc-row">
-                  <span id="comp-toc-summary" class="comp-propose-stats">목차: 확인 전</span>
-                  <div style="flex: 1"></div>
-                  <label class="comp-propose-stats">목차 쪽
-                    <input id="comp-toc-pages" type="text" placeholder="자동" style="width: 70px; font-size: 11px" title="쉼표로 구분 (예: 3,4). 비우면 자동 판별" />
-                  </label>
-                  <button id="comp-toc-detect-btn" class="text-btn" style="font-size: 11px" title="규칙으로 목차 쪽을 찾아 항목을 뽑고 본문과 대조">목차 감지</button>
-                  <select id="comp-llm-model-select" class="props-select llm-model-select" style="font-size: 11px; max-width: 150px"
-                    title="목차 감지(LLM)에 쓸 모델. «자동»은 사용 가능한 프로바이더 순서(Ollama → Gemini …)로 넘어갑니다"></select>
-                  <button id="comp-toc-llm-btn" class="text-btn" style="font-size: 11px" title="LLM으로 목차 항목을 구조화 (텍스트만 보냄)">LLM으로</button>
-                </div>
+                  <div id="comp-signals-list" class="comp-signals-list">
+                    <div class="placeholder">전문을 세는 중…</div>
+                  </div>
+                  <div class="comp-signals-foot">
+                    <label class="comp-sig-opt">어휘 더하기
+                      <input id="comp-signals-add-word" type="text" placeholder="예: 筆談" style="width: 70px; font-size: 11px" title="표제를 끝맺는 말(짧은 행 끝)을 직접 넣습니다. 행 첫머리 어휘는 앞에 ^를 붙이세요 (예: ^有)" />
+                    </label>
+                    <button id="comp-signals-add-btn" class="text-btn text-btn-sm">넣기</button>
+                    <button id="comp-rules-suggest-btn" class="text-btn text-btn-sm" title="LLM 사용: 해제와 본문의 짧은 행 표본을 모델에 보내 표제 어휘 후보를 뽑습니다. 후보는 목록에 들어오고, 켤지는 직접 정합니다">해제·본문에서 뽑기 <span class="llm-tag">LLM</span></button>
+                    <span id="comp-rules-suggest-out" class="comp-rules-suggest-out"></span>
+                  </div>
+                  <details class="comp-rules-advanced">
+                    <summary>참고·억제 <small>— 해제 텍스트(LLM만 읽음)·표제로 보지 않을 행·글자수</small></summary>
+                    <div id="comp-propose-rules" class="comp-propose-rules">
+                      <label>해제·참고 텍스트 <small>(한국고전종합DB 해제 같은 것을 <b>통째로</b> 붙여 넣으세요 — 권별 내용을 골라 씁니다. <span class="llm-tag">LLM</span> 스위치·단추만 읽고, 규칙은 읽지 않습니다)</small>
+                        <textarea id="comp-rules-reference" rows="4" placeholder="해제 전문을 그대로 붙여 넣어도 됩니다. 길면 권별 내용이 있는 데를 골라 LLM에 넘깁니다."></textarea>
+                        <span id="comp-rules-reference-count" class="comp-rules-count"></span>
+                      </label>
+                      <label>억제 목록 <small>(표제로 보지 않을 행, 한 줄에 하나)</small>
+                        <textarea id="comp-rules-suppress" rows="2"></textarea>
+                      </label>
+                      <label>별행 표제 최대 글자수
+                        <input id="comp-rules-maxchars" type="number" min="2" max="60" value="14" style="width: 60px" />
+                      </label>
+                    </div>
+                  </details>
+                </details>
                 <div id="comp-toc-unmatched" class="comp-toc-unmatched" style="display: none"></div>
                 <div id="comp-propose-list" class="comp-propose-list"></div>
               </div>
@@ -1968,12 +1987,9 @@
             <details id="comp-manual" class="comp-manual">
               <summary>단위 손보기 <small>— 기사 하나를 골라 그 «안»을 문단으로 나눕니다</small></summary>
               <div class="comp-manual-body">
+              <!-- 옛 「자동 편성」(쪽의 레이아웃 블록마다 경계 하나)은 D-116에서 없앴다 —
+                   경계는 신호 목록 → 「전부 적용해 새로 세우기」가 세운다 -->
               <div class="comp-manual-tools">
-                <button
-                  id="comp-auto-btn"
-                  class="text-btn text-btn-sm"
-                  title="이 쪽의 레이아웃 블록마다 경계를 하나씩 — 글 단위가 잘 안 보이는 문헌의 출발점입니다"
-                >자동 편성</button>
                 <button
                   id="comp-split-btn"
                   class="text-btn text-btn-sm"

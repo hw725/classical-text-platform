@@ -94,10 +94,30 @@ class DateHead:
     is_day_rel: bool = False  # 是日·翌日
     mark: bool = False  # 날짜 앞의 ○ 표지가 있었나
     matched: str = ""  # 날짜로 읽은 원문 조각
+    wrapped: bool = False  # 「○三十|日」처럼 날짜가 다음 행(열·면·쪽 경계 너머)에서 끝났나
 
     @property
     def present(self) -> bool:
         return bool(self.matched)
+
+
+# 행 끝에서 날짜가 갈린 꼴 — 「○三十」「○二月三十」「三月二十」. 다음 행이 「日」로 시작하면 날짜다.
+# 왜: 세로쓰기 고서는 열이 20자로 고정되어 「○三十|日雨…」처럼 날짜 조각이 열·면·쪽 경계에서
+# 갈린다(浩齋辰巳日錄 실측 2026-09-06: 한 면 8일 중 1일이 이 꼴). ○ 표지나 月이 있어야 한다 —
+# 숫자만 남은 행 끝은 수량(「凡三十」)일 수 있다.
+_WRAP_TAIL_RE = re.compile(
+    rf"^(?:{_MARK}(?:{_GANZHI})?年?{_MONTH}?|(?:{_GANZHI})?年?{_MONTH})初?{_NUM}$"
+)
+
+
+def parse_wrapped_date_head(text: str, next_text: str) -> DateHead:
+    """행 끝에서 갈린 날짜를 다음 행의 첫 글자와 이어 읽는다. 아니면 빈 DateHead."""
+    if not _WRAP_TAIL_RE.match(text) or not next_text.startswith("日"):
+        return DateHead()
+    head = parse_date_head(text + "日")
+    if head.present:
+        head.wrapped = True
+    return head
 
 
 def parse_date_head(text: str) -> DateHead:
@@ -137,7 +157,26 @@ DEFAULT_RULES: dict = {
     # 해제·서지 설명 등 사람이 붙여 넣은 참고 텍스트. 목차 감지(LLM)가 프롬프트에 넣어 참고한다.
     # 규칙(코드)은 이것을 읽지 않는다 — 지식은 데이터, 판단은 사람·LLM의 것(D-080·D-081 태도).
     "reference_text": "",
+    # ── D-116: 전문에서 도출한 규약 ──
+    # head_words: 행 첫머리에 편중된 글자·어휘(title_words의 행머리판). 문헌마다 다르므로 데이터.
+    "head_words": [],
+    # furniture: 쪽마다 같은 자리에 같은 글로 되풀이되는 짧은 행(판심·엽수). 후보에서 뺀다.
+    "furniture": [],
+    # signals: 신호를 켜고 끄는 스위치. 빠진 키는 켜진 것(옛 규칙 파일과 호환).
+    #   date·mark·volume은 혼자 후보를 만들고, short_line·after_short·indent는 보조다.
+    "signals": {},
+    # toc_llm: 목차가 잡혔을 때 항목 구조화에 LLM을 쓸지. 사이드바 «자동 트리»가 이것을 따른다.
+    "toc_llm": False,
+    # origin: "induced"(프로그램이 전문에서 찾음)·"manual"(사람이 손봄)·""(아직 없음).
+    "origin": "",
 }
+
+_SIGNAL_KEYS = ("date", "mark", "volume", "short_line", "after_short", "indent")
+
+
+def signal_on(rules: dict, key: str) -> bool:
+    """신호 스위치 — 규칙에 적혀 있지 않으면 켜진 것으로 본다."""
+    return bool((rules.get("signals") or {}).get(key, True))
 
 
 def normalize_rules(rules: Optional[dict]) -> dict:
@@ -153,6 +192,20 @@ def normalize_rules(rules: Optional[dict]) -> dict:
     # 해제는 길다 — 운양집 해제가 23,894자다. 자르는 것은 저장이 아니라 프롬프트에서
     # 하고(core.toc.reference_excerpt), 여기서는 통째로 둔다.
     out["reference_text"] = str(out.get("reference_text") or "").strip()[:100000]
+    out["head_words"] = [str(w).strip() for w in (out.get("head_words") or []) if str(w).strip()]
+    out["furniture"] = [str(w).strip() for w in (out.get("furniture") or []) if str(w).strip()]
+    # 스위치는 아는 키만, 값은 bool로. use_date·use_layout(옛 굵은 스위치)이 꺼져 있으면
+    # 그 아래 신호도 꺼진 것으로 적어 둔다 — 화면이 한 목록으로 보여 주기 위해서다.
+    sig = {k: bool(v) for k, v in (out.get("signals") or {}).items() if k in _SIGNAL_KEYS}
+    if not out["use_date"]:
+        sig["date"] = False
+        sig["mark"] = False
+    if not out["use_layout"]:
+        for k in ("short_line", "after_short", "indent"):
+            sig[k] = False
+    out["signals"] = sig
+    out["toc_llm"] = bool(out.get("toc_llm"))
+    out["origin"] = str(out.get("origin") or "")
     return out
 
 
@@ -252,6 +305,15 @@ def _layout_signals(lines: list[Line], rules: dict) -> dict[tuple[int, int], lis
                 sizes.append(extent / len(ln.text.strip()))
         if len(sizes) >= 3:
             char_px = statistics.median(sizes)
+        # 바로 앞 행(같은 쪽)의 길이. 앞 행이 본문 중앙값보다 눈에 띄게 짧게 끝났으면
+        # 이 행은 글이 새로 시작하는 자리다 — 「달이 바뀔 때만 행갈음」하는 일기(浩齋辰巳日錄)의
+        # 「二月一日晴…」이 그렇다. 쪽의 첫 행에는 주지 않는다: 앞 쪽에서 이어지는 열일 수 있다.
+        # 열의 «용량» — 이 쪽에서 가장 긴 «정상» 행. 중앙값이 아닌 이유: 20자 열을 OCR이 19자로
+        # 읽는 쪽이 많아 중앙값은 19가 되고, 17자에서 끝난 열이 «2자 짧음»으로 보여 걸리지 않았다
+        # (浩齋辰巳日錄 4쪽 실측). 두 열이 하나로 붙어 읽힌 행(중앙값+2 초과)은 용량 계산에서
+        # 뺀다 — 그것을 용량으로 삼으면 그 쪽의 거의 모든 행이 «짧게 끝난 열»이 된다(93쪽본 실측).
+        capacity = max([n for n in lens if n <= median_len + 2] or [median_len])
+        prev_len: Optional[int] = None
         for ln in page_lines:
             n = len(ln.text.strip())
             if not n:
@@ -259,6 +321,18 @@ def _layout_signals(lines: list[Line], rules: dict) -> dict[tuple[int, int], lis
             reasons = []
             if n <= rules["max_title_chars"] and median_len >= rules["max_title_chars"] + 4:
                 reasons.append("short_line")
+            if (
+                prev_len is not None
+                and median_len >= rules["max_title_chars"] + 4
+                and prev_len <= capacity - 3
+                and n > rules["max_title_chars"]
+            ):
+                # 3자 문턱: 글이 끝난 열은 17자 안팎(용량 20)이었고,
+                # OCR이 한두 글자 빠뜨린 본문 행은
+                # 걸리지 않는다. 이 신호는 날짜가 있는 행에만 점수를 주므로(propose_boundaries)
+                # 잘못 걸려도 본문 행에는 영향이 없다.
+                reasons.append("after_short")
+            prev_len = n
             if median_top is not None and char_px and ln.bbox and len(ln.bbox) == 4:
                 top = ln.bbox[1] if ln.writing_direction.startswith("vertical") else ln.bbox[0]
                 _INDENT_CHARS[(ln.page, ln.line_index)] = round((top - median_top) / char_px, 1)
@@ -286,12 +360,15 @@ def _find_title_word(text: str, words: list[str], limit: int) -> tuple[str, int]
     return best
 
 
-def _line_candidates(raw: str) -> list[tuple[int, str]]:
+def _line_candidates(raw: str, next_text: str = "") -> list[tuple[int, str]]:
     """행 하나에서 경계 후보가 설 자리 — 행 첫머리(0)와 행 안의 ○+날짜 자리. 오프셋은 raw 기준.
 
     왜: 澹齋日錄류 일기는 개행 없이 「…○七日晴…○八日雨…」처럼 열 중간에서 날이 바뀐다.
     행 단위 앵커로는 이런 판식을 자를 수 없다(D-090 «남은 것»). ○ 뒤에 날짜 문법이 있을 때만
     후보로 삼는다 — ○만으로는 구두점·표기 부호와 구별할 수 없다.
+
+    next_text — 다음 비어 있지 않은 행. 「…○三十」처럼 ○+숫자가 행 끝에 걸리고 다음 행이
+    「日」로 시작하면 그 자리도 후보다(열·면·쪽 경계에서 갈린 날짜).
     """
     lead = len(raw) - len(raw.lstrip())
     out = [(0, raw.strip())]
@@ -299,7 +376,7 @@ def _line_candidates(raw: str) -> list[tuple[int, str]]:
         if m.start() <= lead:
             continue  # 첫머리의 ○는 오프셋 0 후보가 다룬다
         sub = raw[m.start() :].strip()
-        if parse_date_head(sub).present:
+        if parse_date_head(sub).present or parse_wrapped_date_head(sub, next_text).present:
             out.append((m.start(), sub))
     return out
 
@@ -496,16 +573,61 @@ def propose_boundaries(
     seen_volumes: set = set()
     prev_month: Optional[int] = None
     prev_day: Optional[int] = None
-    for ln in lines:
+    prev_text = ""  # 바로 앞의 비어 있지 않은 행(쪽 무관)
+    for idx, ln in enumerate(lines):
         if not ln.text.strip():
             continue
-        for char_offset, text in _line_candidates(ln.text):
-            head = parse_date_head(text) if rules["use_date"] else DateHead()
+        # 다음 비어 있지 않은 행 — 쪽을 가리지 않는다. 열·면·쪽 경계 어디서 갈려도 같은 문제다.
+        next_text = next(
+            (nl.text.strip() for nl in lines[idx + 1 : idx + 4] if nl.text.strip()), ""
+        )
+        use_mark = signal_on(rules, "mark")
+        use_date = signal_on(rules, "date") or use_mark
+        for char_offset, text in _line_candidates(ln.text, next_text):
+            head = parse_date_head(text) if use_date else DateHead()
+            if use_date and not head.present:
+                head = parse_wrapped_date_head(text, next_text)
+            if (
+                use_mark
+                and head.present
+                and not head.mark
+                and char_offset == 0
+                and prev_text
+                and _MARK_RE.fullmatch(prev_text[-1])
+            ):
+                # 「…事○|八日啓…」 — ○ 표지가 앞 열 끝에 남고 날짜가 다음 열 첫머리에 왔다.
+                # 浩齋辰巳日錄 93쪽본 실측(2026-09-06): 이 꼴이 35행, 전부 긴 행 감점으로 떨어졌다.
+                head.mark = True
+                head.wrapped = True
+            # 신호 스위치(D-116) — 도출기(rule_induction)가 세는 가족과 같은 계약이다:
+            #   mark = 행 중간의 ○+날짜, 행 첫머리 ○+날짜, 앞 열 끝 ○ 뒤의 날짜
+            #          → 끄면 그 후보가 사라진다
+            #   date = ○ 없이 행 첫머리에 온 날짜 → 끄면 그 후보가 사라진다
+            # 전에는 mark를 꺼도 행 중간 ○+날짜가 «날짜» 후보로 살아남았다(Codex 지적 2026-09-07).
+            marked = head.present and (head.mark or char_offset > 0)
+            if marked and not use_mark:
+                head = DateHead()
+            elif head.present and not head.mark and not signal_on(rules, "date"):
+                head = DateHead()
             word, wpos = _find_title_word(text, rules["title_words"], limit)
+            word_reason = f"title_word:{word}" if word else ""
+            if not word and char_offset == 0:
+                # 행 첫머리 어휘(head_words, D-116) — title_words의 행머리판. 문헌 설정에서 온다.
+                hword = next((w for w in rules["head_words"] if text.startswith(w)), "")
+                if hword:
+                    word, wpos, word_reason = hword, 0, f"head_word:{hword}"
             # 형식·목차 신호는 행 첫머리에만 있다 — 행 중간 후보는 ○ 표지와 날짜가 신호다
-            sig = layout.get((ln.page, ln.line_index), []) if char_offset == 0 else []
+            sig = (
+                [s for s in layout.get((ln.page, ln.line_index), []) if signal_on(rules, s)]
+                if char_offset == 0
+                else []
+            )
             toc = toc_by_line.get((ln.page, ln.line_index)) if char_offset == 0 else None
-            vol = volume_head(text, rules["max_title_chars"]) if char_offset == 0 else None
+            vol = (
+                volume_head(text, rules["max_title_chars"])
+                if char_offset == 0 and signal_on(rules, "volume")
+                else None
+            )
             if not head.present and not word and toc is None and vol is None:
                 continue
 
@@ -522,9 +644,12 @@ def propose_boundaries(
                 # ○+날짜는 그 자체가 조목 표지다. 긴 행·어휘 없음 감점은 이 판식에 맞지 않는다.
                 conf += 0.25
                 reasons.append("mark")
+            if head.wrapped:
+                # 날짜가 다음 행에서 끝났다 — 점수는 그대로, 사람이 알아볼 수 있게 표시만 남긴다
+                reasons.append("date_wrap")
             if word:
                 conf += 0.3
-                reasons.append(f"title_word:{word}")
+                reasons.append(word_reason)
             if vol is not None:
                 if vol in seen_volumes:
                     # 판심의 되풀이 — 여기서 卷이 새로 시작하지 않는다
@@ -541,6 +666,12 @@ def propose_boundaries(
             if "indent" in sig:
                 conf += 0.25
                 reasons.append("indent")
+            if "after_short" in sig and head.present:
+                # 앞 행이 짧게 끝난 뒤의 날짜 행 — 행갈음으로 새 글을 연 자리. 긴 행 감점(아래)도
+                # 사라진다(sig가 비어 있지 않으므로).
+                # 날짜 없는 행에는 주지 않는다: 본문 문단 시작이다.
+                conf += 0.15
+                reasons.append("after_short")
             # 표제 어휘 없이 날짜만 있고 행이 본문만큼 길면 본문 속 날짜일 가능성
             if (
                 head.present
@@ -590,7 +721,12 @@ def propose_boundaries(
                         month = month % 12 + 1
                         month_rolled = True
                         reasons.append("month_rolled")
-                elif prev_month is not None:
+                elif prev_month is not None and not (day == 1 and (sig or head.mark)):
+                    # 「八月一日」처럼 달 이름을 적은 월초 행에 행갈음(after_short·short_line)이나
+                    # ○ 표지가 붙었으면 사슬보다 그 글자를 믿는다. 사슬은 OCR이 「二十日」을
+                    # 「二日」로 읽으면 달을 잘못 넘기고(month_rolled), 그 뒤 진짜 월초가 «달이
+                    # 거꾸로 간다»며 떨어졌다
+                    # (浩齋辰巳日錄 93쪽본 실측: 八·九·十·十一·十二月 월초 전부).
                     forward = (month - prev_month) % 12
                     if forward > 2 or (
                         forward == 0 and day is not None and prev_day is not None and day < prev_day
@@ -619,6 +755,11 @@ def propose_boundaries(
             suppressed = any(text == s or text.startswith(s) for s in rules["suppress"])
             if suppressed:
                 reasons.append("suppressed")
+            if text in rules["furniture"]:
+                # 쪽마다 같은 자리에 같은 글로 되풀이되는 행(판심·엽수) —
+                # 종이의 규약이지 글이 아니다(D-116)
+                conf -= 1.0
+                reasons.append("furniture")
 
             # 장소·상대: 날짜 뒤부터 표제 어휘 앞까지
             tail_start = len(head.matched)
@@ -664,6 +805,7 @@ def propose_boundaries(
                     prev_month = month
                 if day is not None:
                     prev_day = day
+        prev_text = ln.text.strip()
 
     _assign_levels(proposals)
     spans = _build_spans(lines, proposals)

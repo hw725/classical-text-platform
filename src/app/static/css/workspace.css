@@ -4817,6 +4817,27 @@ details[open] > .punct-section-summary::before {
   margin-left: 4px;
 }
 
+/* LLM 표시 — 이 단추·칸이 텍스트를 언어 모델에 보낸다는 뜻. 편성 탭처럼 규칙 도구와 LLM 도구가
+   나란히 있는 곳에서 «어느 것이 모델을 부르는가»를 한눈에 가른다. 표시가 없는 것은 규칙만 쓴다. */
+.llm-tag {
+  display: inline-block;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: var(--accent, #4a7bd0);
+  color: #fff;
+  vertical-align: middle;
+  margin-left: 4px;
+  line-height: 14px;
+}
+.comp-llm-legend {
+  font-size: 10.5px;
+  color: var(--text-secondary);
+  padding: 2px 6px 4px;
+}
+
 .badge-optional {
   display: inline-block;
   font-size: 10px;
@@ -7597,11 +7618,32 @@ input.prop-level { width: 3.2em; }
 
 .comp-rules-count { font-size: 10px; color: var(--text-muted); }
 /* 규칙 제안 (D-092 남은 것): 후보는 눌러서 넣는다 */
-.comp-rules-suggest { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
 .comp-rules-suggest-out { font-size: 10px; color: var(--text-muted); flex-basis: 100%; }
 .comp-rules-cand { font-size: 10px; padding: 1px 5px; border: 1px solid var(--border);
   border-radius: 8px; cursor: pointer; background: transparent; color: inherit; }
 .comp-rules-cand:hover { background: var(--bg-hover, rgba(127,127,127,0.15)); }
+
+/* 이 책의 신호 (D-116): 전문에서 센 규약 후보 — 체크한 것이 규칙이 된다 */
+.comp-signals { border: 1px solid var(--border); border-radius: 4px; padding: 2px 6px 4px; margin: 4px 0; font-size: 11px; }
+.comp-signals > summary { cursor: pointer; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.comp-signals-title { font-weight: 600; }
+.comp-signals > summary .text-btn-sm { margin-left: auto; }
+.comp-signals-list { display: flex; flex-direction: column; gap: 1px; margin-top: 2px; }
+.comp-sig-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 1px 0; }
+.comp-sig-row.is-aux { color: var(--text-secondary); }
+.comp-sig-main { display: inline-flex; align-items: center; gap: 4px; min-width: 190px; cursor: pointer; }
+.comp-sig-main input { margin: 0; }
+.comp-sig-count { font-variant-numeric: tabular-nums; color: var(--text-muted); font-size: 10px; }
+.comp-sig-aux { font-size: 9px; padding: 0 3px; border: 1px solid var(--border); border-radius: 3px; color: var(--text-muted); }
+.comp-sig-bar { display: inline-block; width: 48px; height: 5px; border-radius: 3px; background: var(--bg-secondary, rgba(0,0,0,0.06)); overflow: hidden; }
+.comp-sig-bar > span { display: block; height: 100%; background: #2d6a4f; opacity: 0.7; }
+.comp-sig-ex { font-size: 10px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 220px; }
+.comp-sig-opt { display: inline-flex; align-items: center; gap: 3px; font-size: 10.5px; color: var(--text-secondary); }
+.comp-sig-remove { border: none; background: transparent; color: var(--text-muted); cursor: pointer; font-size: 12px; padding: 0 3px; }
+.comp-sig-remove:hover { color: #c0392b; }
+.comp-sig-dropped { font-size: 10px; color: var(--text-muted); margin-top: 3px; }
+.comp-signals-foot { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; margin-top: 4px; }
+.comp-toc-row.comp-sig-row { border-bottom: 1px dotted var(--border); padding-bottom: 3px; margin-bottom: 2px; }
 
 /* === 화면 정리 (2026-09-03, 사용자 요청 «전체적으로 어지럽다») === */
 

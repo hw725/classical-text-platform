@@ -1624,11 +1624,114 @@ def test_boundary_bbox_falls_back_to_text_match_when_counts_differ(tmp_path):
         {"text": "丁戊己", "bbox": [800, 100, 840, 500]},
         {"text": "黄李語錄劉尹網目", "bbox": [700, 100, 740, 500]},  # 두 자가 이체자
     ]
-    l2 = {"part_id": "v1", "page_number": 1, "image_width": 1000, "image_height": 1500,
-          "ocr_results": [{"layout_block_id": "b", "lines": lines}]}
+    l2 = {
+        "part_id": "v1",
+        "page_number": 1,
+        "image_width": 1000,
+        "image_height": 1500,
+        "ocr_results": [{"layout_block_id": "b", "lines": lines}],
+    }
     (doc / "L2_ocr" / "v1_page_001.json").write_text(json.dumps(l2), encoding="utf-8")
     a = anchor_bbox(doc, "v1", 1, 1)
     assert a and a["bbox"] == [700, 100, 740, 500]
     # 닮은 행이 전혀 없으면 None — 틀린 좌표보다 안 보여 주는 게 낫다
     l4.write_text("甲乙丙丁戊己\n天地玄黃宇宙洪荒", encoding="utf-8")
     assert anchor_bbox(doc, "v1", 1, 1) is None
+
+
+# ── 열·면·쪽 경계에서 갈린 날짜, 행갈음 월초 (D-115, 浩齋辰巳日錄 실측) ─────────────
+
+from src.core.segmentation import Line as _SegLine  # noqa: E402
+
+# 20자 본문 열(浩齋辰巳日錄 4쪽 첫 열 + 다음 열 첫 자)
+_COL = "至斬火屋偸盗者六人官政悛也夕還主人家與金"
+
+
+def _seg_lines(texts, page=1):
+    return [_SegLine(page=page, line_index=i, text=t) for i, t in enumerate(texts)]
+
+
+def test_date_split_across_lines_is_a_candidate():
+    """「…○三十|日雨意…」 — ○+숫자가 행 끝에 걸리고 다음 행이 日로 시작하면 30일 경계다.
+    다음 행이 다른 쪽에 있어도 같다(면·쪽 경계)."""
+    page1 = _seg_lines([_COL, _COL, "家○二十八日城主向略盧寺余乃返家○三十"], page=1)
+    page2 = _seg_lines(["日雨意連日麥耕漸晩民事可憫外寇未退内亂", _COL, _COL], page=2)
+    res = propose_boundaries(page1 + page2, normalize_rules(None))
+    wrapped = [p for p in res["proposals"] if p["accepted"] and "date_wrap" in p["reasons"]]
+    assert len(wrapped) == 1
+    assert (wrapped[0]["page"], wrapped[0]["char_offset"], wrapped[0]["date"]["day"]) == (1, 16, 30)
+    # 숫자만 남은 행 끝(「凡三十」)은 ○도 月도 없으니 날짜가 아니다
+    res2 = propose_boundaries(
+        _seg_lines(["軍粮凡三十", "日雨" + _COL, _COL]), normalize_rules(None)
+    )
+    assert not any("date_wrap" in p["reasons"] for p in res2["proposals"])
+
+
+def test_mark_at_previous_line_end_counts_for_next_line_date():
+    """「…事○|八日啓…」 — ○가 앞 행 끝에 남고 날짜가 다음 행 첫머리에 오면 ○+날짜다.
+    긴 행 감점을 받지 않는다."""
+    lines = _seg_lines(
+        [
+            _COL,
+            "訪太白于郡齋與南環看飢民供館事○",
+            "八日啓咸昌行歴路入率禮洞" + _COL[:8],
+            _COL,
+        ]
+    )
+    res = propose_boundaries(lines, normalize_rules(None))
+    p = next(p for p in res["proposals"] if p["line_index"] == 2)
+    assert p["accepted"] and "mark" in p["reasons"] and "date_wrap" in p["reasons"]
+    assert "long_line" not in p["reasons"]
+    # 앞 행 끝의 ○ 자체는 후보가 아니다(날짜가 없다)
+    assert not any(q["line_index"] == 1 for q in res["proposals"])
+
+
+def test_month_head_after_short_line_is_a_paragraph_start():
+    """「달이 바뀔 때만 행갈음」 — 앞 행이 열 용량보다 3자 이상 짧게 끝난 뒤의 날짜 행은
+    긴 행이어도 경계다. 쪽의 첫 행에는 주지 않고, 날짜 없는 행은 후보조차 아니다."""
+    body = [_COL] * 3 + [
+        "將作我國人物將盡矣天不悔禍何其甚耶",  # 17자 — 글이 끝난 열
+        "二月一日頗入郡城主又以主屹山祭向聞慶雨",
+        _COL,
+    ]
+    res = propose_boundaries(_seg_lines(body), normalize_rules(None))
+    p = next(p for p in res["proposals"] if p["line_index"] == 4)
+    assert p["accepted"] and "after_short" in p["reasons"] and "long_line" not in p["reasons"]
+    assert not any(q["line_index"] == 5 for q in res["proposals"])
+    # 같은 행이 쪽의 첫 행이면 신호가 없다 — 앞 쪽에서 이어지는 열일 수 있다
+    res2 = propose_boundaries(
+        _seg_lines(["二月一日頗入郡城主又以主屹山祭向聞慶雨"] + [_COL] * 4, page=2),
+        normalize_rules(None),
+    )
+    assert not any("after_short" in q["reasons"] for q in res2["proposals"])
+
+
+def test_explicit_month_head_with_layout_signal_beats_date_chain():
+    """OCR이 「二十日」을 「二日」로 읽으면 사슬이 달을 잘못 넘긴다(month_rolled). 그 뒤의
+    행갈음 월초 「八月一日」은 사슬보다 글자를 믿어 date_jump로 떨어지지 않는다."""
+    body = [
+        _COL,
+        "○七月十五日" + _COL[:14],
+        "○二日" + _COL[:17],  # 15 → 2: 사슬은 8월로 넘어갔다고 본다
+        "○二十日" + _COL[:15],
+        "將作我國人物將盡矣天不悔禍何其甚耶",
+        "八月一日越到陣中間春陽義" + _COL[:8],
+        _COL,
+    ]
+    res = propose_boundaries(_seg_lines(body), normalize_rules(None))
+    assert any("month_rolled" in p["reasons"] for p in res["proposals"])
+    p = next(p for p in res["proposals"] if p["line_index"] == 5)
+    assert p["accepted"] and "date_jump" not in p["reasons"] and p["date"]["month"] == 8
+
+
+def test_auto_tree_reports_pages_without_l4(client, tmp_path):
+    """L4가 일부 쪽에만 있으면 응답이 그 수를 말한다 — 「후보 0」의 까닭을 화면이 보이려면 필요하다.
+    浩齋辰巳日錄 실측: OCR 77쪽 중 L4는 序 한 쪽이어서 날짜 340개를 두고 개요가 비었다."""
+    lib, part_id = _setup(client, tmp_path)
+    from pathlib import Path
+
+    (Path(lib) / "documents" / "d1" / "L4_text" / "pages" / f"{part_id}_page_003.txt").unlink()
+    r = client.post("/api/documents/d1/segmentation/auto", json={"part_id": part_id})
+    assert r.status_code == 200, r.text
+    d = r.json()
+    assert d["pages_total"] == 3 and d["pages_with_text"] == 2

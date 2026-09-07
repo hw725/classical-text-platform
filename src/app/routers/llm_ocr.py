@@ -501,7 +501,11 @@ async def api_llm_accounts():
                     }
                     entry["active_model_installed"] = model in installed
                     # 고르기가 «전부 응답 없음»으로 끝나 기본 이름만 돌려준 경우 — 깔려 있어도 못 쓴다
-                    dead = provider._shared_get("vision_dead") if hasattr(provider, "_shared_get") else None
+                    dead = (
+                        provider._shared_get("vision_dead")
+                        if hasattr(provider, "_shared_get")
+                        else None
+                    )
                     entry["active_model_dead"] = bool(dead) and dead == model
                     if model not in installed and provider.provider_id == "ollama":
                         # 비전 모델이 하나도 없으면 기본 모델을 저절로 받기 시작한다 — 사람이
@@ -2201,6 +2205,32 @@ async def api_run_ocr_batch(doc_id: str, part_id: str, body: OcrBatchRequest):
 
         return False, "이미 OCR 결과가 있습니다."
 
+    def _l4_is_hand_edited(dp, pid: str, page: int) -> bool:
+        """확정본(L4)이 있고, 지금 L2를 그대로 옮긴 것과 다른가.
+
+        L2가 없는데 L4가 있으면(텍스트 가져오기·손 입력) 역시 «OCR에서 온 것이 아니다»로 본다.
+        비교는 일괄 OCR이 L4를 채울 때 쓰는 compose_page_text와 같은 모양으로 한다.
+        """
+        import json as _json
+
+        from core.document import get_corrected_text
+        from ocr.correction_pass import compose_page_text
+
+        try:
+            l4 = (get_corrected_text(dp, pid, page).get("corrected_text") or "").strip()
+        except Exception:  # noqa: BLE001 — 확정본이 없으면 지킬 것도 없다
+            return False
+        if not l4:
+            return False
+        l2_path = dp / "L2_ocr" / f"{pid}_page_{page:03d}.json"
+        if not l2_path.exists():
+            return True
+        try:
+            l2 = _json.loads(l2_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return True
+        return compose_page_text(l2, None).strip() != l4
+
     async def _run_batch():
         """쪽을 하나씩 돌며 결과를 큐에 넣는다."""
         loop = asyncio.get_event_loop()
@@ -2249,6 +2279,22 @@ async def api_run_ocr_batch(doc_id: str, part_id: str, body: OcrBatchRequest):
                     )
 
                 block_created = False
+                # L4 보호(D-115 보강, Codex 지적 2026-09-07):
+                # 이 쪽의 확정본이 «지금 L2를 그대로 옮긴 것»이
+                # 아니면 사람이 고쳤거나 다른 데서 온 것이다 — OCR은 새로 하되 확정본은 두고 알린다.
+                # (레이아웃이 바뀌어 다시 도는 쪽이 여기 걸린다.
+                # 처음 도는 쪽은 L4가 비어 있어 걸리지 않는다.)
+                keep_l4 = False
+                if body.fill_text_layer:
+                    keep_l4 = await loop.run_in_executor(
+                        None, lambda p=page_number: _l4_is_hand_edited(doc_path, part_id, p)
+                    )
+                    if keep_l4:
+                        warnings.append(
+                            f"{page_number}쪽 확정본은 OCR 결과와 달라(사람이 고친 것으로 보여) "
+                            "두었습니다. "
+                            "새 OCR로 바꾸려면 교정 인덱스의 「OCR 채우기」를 누르세요."
+                        )
                 try:
                     # 0) 지금 결과를 한 벌 남긴다 (덮어쓰기 직전).
                     #
@@ -2325,11 +2371,11 @@ async def api_run_ocr_batch(doc_id: str, part_id: str, body: OcrBatchRequest):
 
                     # 3) OCR 텍스트를 교정 텍스트(L4)에도 넣는다.
                     #
-                    # 이 쪽은 방금 새로 OCR 했으므로 덮어써도 잃을 것이 없다.
-                    # (건너뛴 쪽은 여기 오지 않으니 사람이 고친 교정은 안전하다.)
+                    # 확정본이 비어 있거나 «전 OCR을 그대로 옮긴 것»일 때만 — 사람이 고친 확정본은
+                    # 위에서 keep_l4로 걸러 둔다(레이아웃이 바뀌어 다시 도는 쪽).
                     # 고서 흐름의 「OCR 채우기」 단추와 같은 일을 자동으로 한다.
                     # 교정 초안이 있으면 자동 수용된 블록은 교정본으로 바꿔 넣는다.
-                    if body.fill_text_layer and lines:
+                    if body.fill_text_layer and lines and not keep_l4:
                         try:
                             from core.document import save_page_text
                             from ocr.correction_pass import compose_page_text

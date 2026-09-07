@@ -674,8 +674,12 @@ function _toggleOcrVerticalView() {
  * 쪽마다 눌러야 했다. 편성(글 단위 나누기)은 권 전체의 확정본이 있어야 시작되므로
  * 고서에서도 한 번에 돌릴 수 있어야 한다. 이미 결과가 있는 쪽은 건너뛰고(중단 뒤
  * 이어 돌리기), 레이아웃이 없는 쪽은 쪽 전면 1블록으로 돌린다 — 쪽 단위 엔진(NDL)은
- * 어차피 쪽 전체에서 행을 찾으므로(D-086) 고서에서도 손해가 없다. 텍스트 레이어
- * PDF는 만들지 않는다(고서 흐름에서는 L4 교정이 먼저다).
+ * 어차피 쪽 전체에서 행을 찾으므로(D-086) 고서에서도 손해가 없다.
+ *
+ * OCR 결과는 확정본(L4)에도 복사한다(fill_text_layer). 편성·자동 트리는 L4만 읽으므로
+ * 이것을 끄면 OCR 77쪽을 돌려도 개요가 비어 나온다 — 浩齋辰巳日錄 실측(2026-09-06)에서
+ * 날짜 340개를 두고 「후보 0」이 나온 원인이었다(이전에는 false였다). 사람이 이미 고친
+ * L4는 서버가 덮지 않는다(새로 OCR 한 쪽만 쓴다).
  */
 async function _runPartOcr() {
   const docId = viewerState.docId;
@@ -707,7 +711,7 @@ async function _runPartOcr() {
     backup_before_overwrite: true,
     auto_full_page_block: true,
     writing_direction: "vertical_rtl",
-    fill_text_layer: false,
+    fill_text_layer: true,
     llm_correction: "off",
   };
   if (llmSel.force_provider) body.force_provider = llmSel.force_provider;

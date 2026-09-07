@@ -2215,30 +2215,17 @@ async def api_put_segmentation_rules(doc_id: str, body: SegmentationRulesRequest
     """
     import jsonschema
 
-    from core.segmentation import normalize_rules
+    from core.rule_induction import save_segmentation_rules
 
     doc_path = require_repo_path("documents", doc_id)
     try:
-        manifest = get_document_info(doc_path)
+        rules = save_segmentation_rules(doc_path, body.rules)  # 스키마 검증 + 원자적 쓰기
     except FileNotFoundError:
         return JSONResponse({"error": f"문헌을 찾을 수 없습니다: {doc_id}"}, status_code=404)
-
-    rules = normalize_rules(body.rules) if body.rules is not None else None
-    manifest["segmentation_rules"] = rules
-    schema_path = (
-        Path(__file__).resolve().parent.parent.parent.parent
-        / "schemas"
-        / "source_repo"
-        / "manifest.schema.json"
-    )
-    try:
-        schema = json.loads(schema_path.read_text(encoding="utf-8"))
-        jsonschema.validate(manifest, schema)
     except jsonschema.ValidationError as e:
         return JSONResponse(
             {"error": f"규칙 형식이 스키마에 맞지 않습니다: {e.message}"}, status_code=400
         )
-    write_json_atomic(doc_path / "manifest.json", manifest)
     return {"segmentation_rules": rules}
 
 

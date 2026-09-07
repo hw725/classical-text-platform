@@ -1418,6 +1418,36 @@ def test_batch_can_skip_filling_correction_text(batch_ready):
     assert not got["text"]
 
 
+def test_batch_keeps_hand_edited_correction_text(batch_ready):
+    """다시 도는 쪽이라도 사람이 고친 확정본(L4)은 두고 OCR만 새로 한다 (D-115 보강).
+
+    전에는 레이아웃이 바뀌어 다시 도는 쪽의 L4를 확인 없이 덮었다(Codex 지적 2026-09-07).
+    «전 OCR을 그대로 옮긴» L4는 새 OCR로 바꾸고, 다른 L4는 두고 경고에 적는다.
+    """
+    client, doc_id, part_id = batch_ready
+    url = f"/api/documents/{doc_id}/parts/{part_id}/ocr/batch"
+    r = client.post(url, json={"engine_id": "dummy", "embed_after": False, "pages": [1, 2]})
+    assert next(e for e in _sse_events(r) if e["type"] == "complete")["processed"] == 2
+    # 1쪽은 사람이 고쳤고, 2쪽은 OCR 그대로다
+    r = client.put(
+        f"/api/documents/{doc_id}/pages/1/text?part_id={part_id}",
+        json={"text": "사람이 고친 확정본"},
+    )
+    assert r.status_code == 200, r.text
+    # 강제로 다시 돌린다(skip_existing=False → 두 쪽 다 재실행)
+    r = client.post(
+        url,
+        json={"engine_id": "dummy", "embed_after": False, "pages": [1, 2], "skip_existing": False},
+    )
+    done = next(e for e in _sse_events(r) if e["type"] == "complete")
+    assert done["processed"] == 2, done
+    assert any("1쪽 확정본" in w for w in done.get("warnings", [])), done.get("warnings")
+    got1 = client.get(f"/api/documents/{doc_id}/pages/1/text?part_id={part_id}").json()
+    assert got1["text"].strip() == "사람이 고친 확정본"
+    got2 = client.get(f"/api/documents/{doc_id}/pages/2/text?part_id={part_id}").json()
+    assert "18세기" in got2["text"]
+
+
 def test_fill_text_moves_existing_ocr_without_llm(isolated_app):
     """이미 OCR 한 문헌은 다시 돌리지 않고 옮기기만 한다.
 

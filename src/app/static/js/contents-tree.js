@@ -92,7 +92,7 @@ function _renderContentsTree(container) {
   if (!data || data.total_units === 0) {
     const ph = document.createElement("div");
     ph.className = "placeholder";
-    ph.textContent = "단위(권·기사)가 없습니다. 위의 «경계 넣기»로 첫 경계를 놓거나, 편성 인덱스의 경계 제안·자동 편성을 쓰세요.";
+    ph.textContent = "단위(권·기사)가 없습니다. 위의 «경계 넣기»로 첫 경계를 놓거나, 「자동 트리」·편성 인덱스의 「경계 제안」을 쓰세요.";
     container.appendChild(ph);
     return;
   }
@@ -994,9 +994,11 @@ function highlightContentsForPage(pageNum) {
 
 
 /**
- * 「자동 트리」: 목차·해제·들여쓰기·위치를 합쳐 개요를 한 번에 세운다 (D-092 후속).
+ * 「자동 트리」: 편성 탭 「전부 적용해 새로 세우기」의 바로 가기 (D-092 후속, D-116).
+ * 이 문헌에 저장된 규칙(신호 설정)으로 목차·卷頭·날짜·○권점·어휘를 찾아 개요를 한 번에 세운다.
+ * 규칙이 아직 없으면 서버가 확정본 전문에서 먼저 찾아 문헌 설정에 저장한다.
  * 이 권의 기존 경계는 새로 세워진다(Git으로 되돌릴 수 있다). 손으로 고친 것이 많으면 편성 탭의
- * 제안 패널에서 체크해 적용하는 쪽이 낫다 — 그쪽은 제안 경계만 바꿔치기한다.
+ * 제안 패널에서 체크해 「골라 적용」하는 쪽이 낫다 — 그쪽은 제안 경계만 바꿔치기한다.
  */
 async function _autoTree() {
   const interpId = typeof interpState !== "undefined" ? interpState.interpId : null;
@@ -1005,11 +1007,13 @@ async function _autoTree() {
     return;
   }
   const n = contentsState.data?.total_units || 0;
-  const msg = n
-    ? `이 권의 단위 ${n}개를 지우고 목차·해제·들여쓰기로 개요를 다시 세웁니다. 계속할까요?`
-    : "목차·해제·들여쓰기·위치로 개요를 세웁니다. 계속할까요?";
+  // 확정본(L4)만 읽는다는 말을 여기서 한다 — OCR만 돌린 쪽은 규칙이 보지 못한다.
+  const how = "확정본(L4)이 있는 쪽에서 이 책의 신호(목차·卷頭·날짜·○권점·어휘)로 개요를 세웁니다.\n신호 설정이 아직 없으면 전문에서 찾아 문헌 설정에 저장합니다 (편성 인덱스 「경계 제안」에서 고칠 수 있음).";
+  const msg = n ? `이 권의 단위 ${n}개를 지우고 개요를 다시 세웁니다.\n${how} 계속할까요?` : `${how} 계속할까요?`;
   if (!confirm(msg)) return;
-  const useLlm = confirm("목차 항목 구조화에 LLM(해제 참고)을 쓸까요? (취소 = 규칙만)");
+  // 규칙과 LLM의 경계: 경계 찾기 자체는 언제나 규칙이고, LLM은 «목차가 잡혔을 때 그 항목을
+  // 구조화하는 일»에만 쓰인다(텍스트만 보낸다). 쓸지는 편성 탭 목차 줄의 스위치(문헌 설정
+  // toc_llm)가 정한다 — 여기서 되묻지 않는다(D-116: 사이드바 단추는 바로 가기다).
   const llmSel = typeof getLlmModelSelection === "function" ? getLlmModelSelection("comp-llm-model-select") : {};
   const btn = document.getElementById("contents-auto-btn");
   if (btn) { btn.disabled = true; btn.textContent = "세우는 중…"; }
@@ -1019,22 +1023,52 @@ async function _autoTree() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         part_id: viewerState.partId,
-        use_llm_toc: useLlm,
-        force_provider: useLlm ? llmSel.force_provider || null : null,
-        force_model: useLlm ? llmSel.force_model || null : null,
+        use_llm_toc: null, // 저장된 규칙의 toc_llm을 따른다
+        force_provider: llmSel.force_provider || null,
+        force_model: llmSel.force_model || null,
         replace: "all",
       }),
     });
     const d = await res.json();
     if (!res.ok) throw new Error(d.error || `HTTP ${res.status}`);
-    const toc = d.toc_pages?.length ? `목차 ${d.toc_pages.join(",")}쪽 · ` : "목차 없음 · ";
-    showToast(`${toc}후보 ${d.proposals} 중 ${d.applied}개로 개요를 세웠습니다` + (d.removed ? ` (이전 ${d.removed}개 정리)` : "") + (d.unmatched_toc?.length ? ` · 목차에만 있는 항목 ${d.unmatched_toc.length}` : ""), "success");
+    showToast(describeAutoTreeResult(d, d.llm_toc), "success");
+    // 일부 쪽에만 확정본이 있으면 나머지는 규칙이 보지도 못했다 — 「후보 0」의 흔한 원인.
+    if (d.pages_total && d.pages_with_text < d.pages_total) {
+      showToast(
+        `확정본(L4)이 있는 쪽은 ${d.pages_with_text}/${d.pages_total}쪽입니다. 나머지 쪽은 규칙이 읽지 못했습니다. ` +
+          "교정 인덱스의 「OCR 채우기」로 확정본을 만든 뒤 다시 세우세요.",
+        "warning",
+      );
+    }
     await refreshContentsTree();
   } catch (e) {
     showToast(`자동 트리 실패: ${e.message}`, "error");
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = "자동 트리"; }
   }
+}
+
+/**
+ * 자동 트리 응답 → 토스트 한 줄. 편성 탭의 「전부 적용해 새로 세우기」도 같은 말을 쓴다.
+ * 목차가 없으면 LLM은 아예 불리지 않는다 — 스위치가 켜져 있어도 «규칙만»으로 적는다.
+ */
+function describeAutoTreeResult(d, useLlm) {
+  const llmUsed = useLlm && d.toc_pages?.length;
+  const how = llmUsed ? `LLM 구조화${d.toc_meta?.model ? `(${d.toc_meta.model})` : ""} · ` : "규칙만 · ";
+  const toc = d.toc_pages?.length ? `목차 ${d.toc_pages.join(",")}쪽 · ` : "목차 없음 · ";
+  let text = `${how}${toc}후보 ${d.proposals} 중 ${d.applied}개로 개요를 세웠습니다`;
+  if (d.removed) text += ` (이전 ${d.removed}개 정리)`;
+  if (d.unmatched_toc?.length) text += ` · 목차에만 있는 항목 ${d.unmatched_toc.length}`;
+  if (d.induced) {
+    // 이번에 전문에서 규약을 새로 찾아 저장했다 — 무엇을 켰는지 말한다(D-116)
+    const names = d.induced
+      .filter((id) => !["short_line", "after_short", "indent"].includes(id))
+      .map((id) => (typeof _signalLabel === "function" ? _signalLabel(id) : id));
+    text += names.length
+      ? ` · 이 책의 규약을 찾아 저장했습니다: ${names.join(", ")}`
+      : " · 되풀이되는 표지를 찾지 못해 기본 신호로 세웠습니다";
+  }
+  return text;
 }
 
 document.addEventListener("DOMContentLoaded", () => {

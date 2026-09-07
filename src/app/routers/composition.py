@@ -82,11 +82,20 @@ class SegmentationAutoRequest(BaseModel):
     """자동 트리 — 목차 감지 → 제안 → 적용을 한 번에."""
 
     part_id: str
-    use_llm_toc: bool = False
+    use_llm_toc: bool | None = None  # None이면 저장된 규칙의 toc_llm을 따른다 (D-116)
     force_provider: str | None = None
     force_model: str | None = None
     replace: str = "all"
     toc_only: bool | None = None  # None이면 목차가 잡혔을 때만 True
+    # 편성 탭 목차 줄(D-116): 껐으면 목차 감지·대조·LLM을 모두 건너뛰고, 쪽을 적었으면 그 쪽을 쓴다
+    use_toc: bool = True
+    toc_pages: list[int] | None = None
+
+
+class SegmentationSignalsRequest(BaseModel):
+    """전문에서 경계 규약(신호)을 세는 요청 (D-116). 저장하지 않는다."""
+
+    part_id: str
 
 
 class BoundaryUpdateRequest(BaseModel):
@@ -401,6 +410,41 @@ async def api_segmentation_propose(doc_id: str, body: SegmentationProposeRequest
     return result
 
 
+@router.post("/api/documents/{doc_id}/segmentation/signals")
+async def api_segmentation_signals(doc_id: str, body: SegmentationSignalsRequest):
+    """전문에서 이 책의 경계 규약을 센다 (D-116). 아무것도 저장하지 않는다.
+
+    목적: 책마다 다른 글의 시작 표지(○+날짜·談草·卷頭·행머리 어휘)를 코드가 아니라 전문에서
+          찾아 신호 목록으로 돌려준다. 화면은 이것을 체크박스로 보이고, 고른 것이 규칙이 된다.
+    입력: part_id.
+    출력: core.rule_induction.induce_signals() 결과 + "source"(L4·L2 쪽 수)
+          + "saved_rules"(지금 저장된 규칙 — 체크 상태의 출발점) + "recommended_rules".
+    확정본(L4)이 없는 쪽은 OCR 결과(L2)로 센다 — 규약을 세는 데는 글자 몇이 틀려도 되지만,
+    제안·적용은 L4만 읽으므로 source를 화면이 알려 준다.
+    """
+    from core.document import get_document_info
+    from core.rule_induction import collect_lines_any_layer, induce_signals, rules_from_signals
+    from core.segmentation import normalize_rules
+
+    doc_path, err = _doc(doc_id)
+    if err is not None:
+        return err
+    try:
+        saved = get_document_info(doc_path).get("segmentation_rules")
+    except FileNotFoundError:
+        saved = None
+    lines, source = collect_lines_any_layer(doc_path, body.part_id)
+    if not lines:
+        return JSONResponse(
+            {"error": "텍스트가 있는 쪽이 없습니다. OCR을 먼저 하세요."}, status_code=400
+        )
+    result = induce_signals(lines, saved)
+    result["source"] = source
+    result["saved_rules"] = normalize_rules(saved) if saved else None
+    result["recommended_rules"] = rules_from_signals(result, saved)
+    return result
+
+
 @router.post("/api/documents/{doc_id}/segmentation/toc")
 async def api_segmentation_toc(doc_id: str, body: SegmentationTocRequest):
     """목차 쪽을 판별하고 항목을 뽑는다 (D-089). 저장하지 않는다.
@@ -546,7 +590,20 @@ async def api_segmentation_auto(doc_id: str, body: SegmentationAutoRequest):
     """
     from app._state import _get_llm_router
     from core.document import get_document_info
-    from core.segmentation import collect_document_lines, normalize_rules, propose_boundaries
+    from core.rule_induction import (
+        collect_lines_any_layer,
+        induce_signals,
+        induction_found_something,
+        rules_are_empty,
+        rules_from_signals,
+        save_segmentation_rules,
+    )
+    from core.segmentation import (
+        _list_part_pages,
+        collect_document_lines,
+        normalize_rules,
+        propose_boundaries,
+    )
     from core.toc import (
         align_toc_to_body,
         detect_toc_pages,
@@ -558,22 +615,44 @@ async def api_segmentation_auto(doc_id: str, body: SegmentationAutoRequest):
     if err is not None:
         return err
     try:
-        rules = normalize_rules(get_document_info(doc_path).get("segmentation_rules"))
+        saved_rules = get_document_info(doc_path).get("segmentation_rules")
     except FileNotFoundError:
-        rules = normalize_rules(None)
+        saved_rules = None
+    induced = None
+    if rules_are_empty(saved_rules):
+        # 아직 규칙이 없으면 전문에서 먼저 찾아 저장한다(D-116). 사람이 화면에서 고친 것이
+        # 있으면(origin이 있으면) 그것을 따르고 다시 세지 않는다.
+        all_lines, _src = collect_lines_any_layer(doc_path, body.part_id)
+        if all_lines:
+            induced = induce_signals(all_lines, saved_rules)
+            saved_rules = rules_from_signals(induced, saved_rules)
+            # 아무것도 못 찾았으면 저장하지 않는다 — 확정본이 늘면 다음 자동 트리가 다시 센다
+            if induction_found_something(induced):
+                save_segmentation_rules(doc_path, saved_rules)
+    rules = normalize_rules(saved_rules)
+    use_llm_toc = rules["toc_llm"] if body.use_llm_toc is None else bool(body.use_llm_toc)
     lines, page_texts = collect_document_lines(doc_path, body.part_id, None)
     if not lines:
         return JSONResponse(
             {"error": "확정 텍스트(L4)가 있는 쪽이 없습니다. OCR·교정을 먼저 하세요."},
             status_code=400,
         )
+    # 규칙은 확정본(L4)만 읽는다. 일부 쪽에만 L4가 있으면 나머지 쪽의 날짜·권점은 보지도 못하고
+    # 「후보 0」이 나온다 — 그 사실을 화면이 말해 주어야 한다(浩齋辰巳日錄 실측 2026-09-06:
+    # OCR 77쪽 중 L4는 序 한 쪽이어서 날짜 340개를 두고 개요가 비었다).
+    pages_total = len(_list_part_pages(doc_path, body.part_id, get_document_info))
     page_lines = {p: t.split("\n") for p, t in page_texts.items()}
-    toc_pages = detect_toc_pages(page_lines, rules["max_title_chars"])
+    if not body.use_toc:
+        toc_pages = []
+    elif body.toc_pages:
+        toc_pages = [int(p) for p in body.toc_pages if int(p) in page_lines]
+    else:
+        toc_pages = detect_toc_pages(page_lines, rules["max_title_chars"])
     toc_matches = None
     unmatched = []
     toc_meta = None
     if toc_pages:
-        if body.use_llm_toc:
+        if use_llm_toc:
             entries, toc_meta = await extract_toc_entries_llm(
                 page_lines,
                 toc_pages,
@@ -629,6 +708,12 @@ async def api_segmentation_auto(doc_id: str, body: SegmentationAutoRequest):
     return {
         "toc_pages": toc_pages,
         "toc_meta": toc_meta,
+        "llm_toc": bool(use_llm_toc),
+        # 이번에 규칙을 새로 찾았으면 무엇을 켰는지 — 화면 토스트가 «○+날짜·談草로 세웠다»고 말한다
+        "induced": ([s["id"] for s in induced["signals"] if s["recommended"]] if induced else None),
+        "rules_origin": rules["origin"],
+        "pages_total": pages_total,
+        "pages_with_text": len(page_texts),
         "proposals": len(result["proposals"]),
         "accepted": sum(1 for p in result["proposals"] if p["accepted"]),
         "toc_only": toc_only,
